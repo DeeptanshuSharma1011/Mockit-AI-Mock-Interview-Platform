@@ -387,3 +387,53 @@ export async function completeInterview(req: AuthenticatedRequest, res: Response
     res.status(500).json({ error: "Failed to process interview completion: " + error.message });
   }
 }
+
+export async function getInterviewDetails(req: AuthenticatedRequest, res: Response) {
+  if (!req.user) {
+    return res.status(401).json({ error: "Unauthenticated request" });
+  }
+
+  const userId = req.user.userId;
+  const { id } = req.params;
+
+  try {
+    let interview: any = null;
+
+    if (isUsingMockDB) {
+      interview = mockInterviews.find(item => item.id === id && item.userId === userId);
+    } else {
+      const { data, error } = await supabase
+        .from("interviews")
+        .select("*")
+        .eq("id", id)
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (error) {
+        throw new Error("Supabase error: " + error.message);
+      }
+      if (data) {
+        interview = {
+          id: data.id,
+          userId: data.user_id || data.userId,
+          interviewerGender: data.interviewer_gender || data.interviewerGender,
+          category: data.category,
+          domain: data.domain,
+          difficulty: data.difficulty,
+          status: data.status,
+          createdAt: data.created_at || data.createdAt
+        };
+      }
+    }
+
+    if (!interview) {
+      return res.status(404).json({ error: "Interview setup session not found" });
+    }
+
+    res.json({ interview });
+  } catch (error: any) {
+    console.error("Get interview details error:", error);
+    res.status(500).json({ error: "Failed to fetch interview details: " + error.message });
+  }
+}
+

@@ -19,7 +19,13 @@ import {
   Sliders,
   Award,
   Timer,
-  Tag
+  Tag,
+  MessageSquare,
+  Keyboard,
+  PhoneOff,
+  Settings,
+  Sparkles,
+  ShieldAlert
 } from "lucide-react";
 import { Page } from "../types";
 import { 
@@ -86,6 +92,18 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [useElevenLabs, setUseElevenLabs] = useState(true);
 
+  // Lobby and Pre-flight state variables
+  const [isLobby, setIsLobby] = useState(true);
+  const [micPermission, setMicPermission] = useState<"prompt" | "granted" | "denied" | "unsupported">("prompt");
+  const [micStream, setMicStream] = useState<MediaStream | null>(null);
+  const [voiceLevel, setVoiceLevel] = useState(0);
+  const [testingVoiceSynth, setTestingVoiceSynth] = useState(false);
+  const [elevenLabsError, setElevenLabsError] = useState<string | null>(null);
+
+  // Modern meeting layout state variables
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+
   // Load Speech Synthesis voices
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -116,6 +134,43 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
       }
     }
   }, [interviewerName]);
+
+  // Audio level analyzer for the Pre-Flight mic test
+  useEffect(() => {
+    if (!micStream) return;
+    try {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const source = audioContext.createMediaStreamSource(micStream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      
+      let animationId: number;
+      const checkVolume = () => {
+        if (!isMountedRef.current) return;
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          sum += dataArray[i];
+        }
+        const average = sum / bufferLength;
+        setVoiceLevel(average);
+        animationId = requestAnimationFrame(checkVolume);
+      };
+      
+      checkVolume();
+      
+      return () => {
+        cancelAnimationFrame(animationId);
+        audioContext.close();
+      };
+    } catch (e) {
+      console.error("Failed to initialize volume analyzer:", e);
+    }
+  }, [micStream]);
 
   // Speech recognition setup
   useEffect(() => {
@@ -181,10 +236,43 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
     };
   }, []);
 
-  // Fetch first question on mount
+  // Fetch interview metadata details on mount for the Pre-Flight Lobby
+  const loadInterviewDetails = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/interviews/${interviewId}`, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to load interview details");
+      }
+      
+      const int = data.interview;
+      setDomain(int.domain || "Technical Domain");
+      setCategory(int.category || "Professional");
+      setCurrentDifficulty(int.difficulty || "Intermediate");
+      
+      // Determine default interviewer name based on gender setup
+      const defaultName = int.interviewerGender === "Female" ? "Sophia" : "James";
+      setInterviewerName(defaultName);
+      
+    } catch (err: any) {
+      console.error("Lobby load error:", err);
+      setError(err.message || "Failed to fetch lobby details");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     isMountedRef.current = true;
-    startSession();
+    loadInterviewDetails();
+    
     return () => {
       isMountedRef.current = false;
       // Cancel any ongoing speech on unmount
@@ -198,17 +286,90 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
       if (evalTimeoutRef.current) {
         clearTimeout(evalTimeoutRef.current);
       }
+      // Clean up any remaining mic test streams
+      if (micStream) {
+        micStream.getTracks().forEach(track => track.stop());
+      }
     };
   }, [interviewId]);
 
+  // Request browser microphone permission
+  const requestMicPermission = async () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setMicStream(stream);
+      setMicPermission("granted");
+      setRecognitionError(null);
+    } catch (err: any) {
+      console.error("Mic access error:", err);
+      setMicPermission("denied");
+      setRecognitionError("Microphone permission denied. To proceed with the voice interview, please allow microphone access or switch to manual typing.");
+    }
+  };
+
+  // Test ElevenLabs voice synthesis in Lobby
+  const testVoiceSynthesis = async () => {
+    if (testingVoiceSynth) return;
+    setTestingVoiceSynth(true);
+    setElevenLabsError(null);
+    
+    const sampleText = interviewerName === "Sophia" 
+      ? "Hello! I am Sophia, your technical interviewer today. I have configured your adaptive path, and my voice synthesis is working beautifully."
+      : "Hello! I am James, your executive assessor. Your system is fully verified, and I am ready to begin when you are.";
+      
+    try {
+      const response = await fetch("/api/tts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text: sampleText,
+          personality: interviewerName
+        })
+      });
+      
+      if (response.ok) {
+        const blob = await response.blob();
+        const audioUrl = URL.createObjectURL(blob);
+        if (audioRef.current) {
+          audioRef.current.src = audioUrl;
+          await audioRef.current.play();
+        }
+      } else {
+        const errData = await response.json();
+        throw new Error(errData.error || "ElevenLabs synthesis failed.");
+      }
+    } catch (err: any) {
+      console.error("Lobby voice test error:", err);
+      setElevenLabsError(err.message || "Failed to contact ElevenLabs voice service. Double check your ELEVENLABS_API_KEY.");
+    } finally {
+      setTestingVoiceSynth(false);
+    }
+  };
+
+  // Stop lobby tracking and enter actual live session room
+  const enterInterviewRoom = () => {
+    if (micStream) {
+      micStream.getTracks().forEach(track => track.stop());
+      setMicStream(null);
+    }
+    setVoiceLevel(0);
+    setIsLobby(false);
+    
+    // Begin actual session loading and speaking
+    startSession();
+  };
+
   // Live session timer
   useEffect(() => {
-    if (loading || isCompleted) return;
+    if (loading || isCompleted || isLobby) return;
     const interval = setInterval(() => {
       setElapsedSeconds(prev => prev + 1);
     }, 1000);
     return () => clearInterval(interval);
-  }, [loading, isCompleted]);
+  }, [loading, isCompleted, isLobby]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -262,8 +423,8 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
         setSelectedVoiceName(bestVoice.name);
       }
 
-      // Read aloud the greeting & question using the correct voice name
-      speakText(data.text, voiceToUse);
+      // Read aloud the greeting & question using the correct voice name, passing the personality explicitly
+      speakText(data.text, voiceToUse, undefined, data.interviewerName);
 
     } catch (err: any) {
       console.error(err);
@@ -319,7 +480,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   };
 
   // Speaks text aloud using premium ElevenLabs voice or system fallback
-  const speakText = async (text: string, overrideVoiceName?: string, overrideRate?: number) => {
+  const speakText = async (text: string, overrideVoiceName?: string, overrideRate?: number, overridePersonality?: string) => {
     if (!isMountedRef.current) return;
     if (isMuted) return;
 
@@ -332,8 +493,10 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
       audioRef.current.currentTime = 0;
     }
     setIsSpeaking(false);
+    setElevenLabsError(null);
 
     const cleanText = text.replace(/[*_`#\-]/g, " ").trim();
+    const activeInterviewer = overridePersonality || interviewerName;
 
     if (useElevenLabs) {
       try {
@@ -345,7 +508,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
           },
           body: JSON.stringify({
             text: cleanText,
-            personality: interviewerName
+            personality: activeInterviewer
           })
         });
 
@@ -366,18 +529,22 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
           };
           audioRef.current.onerror = () => {
             setIsSpeaking(false);
-            speakTextSystem(cleanText, overrideVoiceName, overrideRate);
+            setElevenLabsError("Failed to play synthesized audio. Check speaker settings or browser audio permission.");
           };
 
           await audioRef.current.play();
           return;
         } else {
-          // Fall back to system TTS
-          speakTextSystem(cleanText, overrideVoiceName, overrideRate);
+          // Status error from backend (e.g. 412 API Key missing)
+          const errData = await response.json().catch(() => ({}));
+          const errMsg = errData.error || `Voice generation failed with status ${response.status}.`;
+          setElevenLabsError(errMsg);
+          setIsSpeaking(false);
         }
-      } catch (err) {
-        console.error("ElevenLabs TTS failed, playing via system:", err);
-        speakTextSystem(cleanText, overrideVoiceName, overrideRate);
+      } catch (err: any) {
+        console.error("ElevenLabs TTS failed:", err);
+        setElevenLabsError("Connection error to ElevenLabs proxy server. Please ensure the backend is running properly.");
+        setIsSpeaking(false);
       }
     } else {
       speakTextSystem(cleanText, overrideVoiceName, overrideRate);
@@ -524,610 +691,800 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   return (
     <div className="h-screen bg-[#07080d] text-gray-100 font-sans flex flex-col justify-between relative overflow-hidden" id="active-interview-root">
       
-      {/* Background radial glows */}
+      {/* Background ambient radial glows */}
       <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] bg-purple-600/5 rounded-full blur-[140px] pointer-events-none" />
       <div className="absolute bottom-[-10%] left-[-10%] w-[500px] h-[500px] bg-indigo-600/5 rounded-full blur-[140px] pointer-events-none" />
 
-      {/* Header bar */}
-      <header className="bg-[#0b0c13] border-b border-white/5 py-4 px-6 sticky top-0 z-40 backdrop-blur-md bg-opacity-90">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
-          
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={handleAbort}
-              className="p-2.5 bg-white/5 hover:bg-white/10 rounded-xl border border-white/5 transition-all cursor-pointer text-gray-400 hover:text-white"
-              title="Abort interview and back to dashboard"
-            >
-              <ArrowLeft className="w-4 h-4" />
-            </button>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-extrabold text-white text-base tracking-tight">Active Mock Interview</span>
-                <span className="text-[9px] bg-red-500/10 text-red-400 border border-red-500/20 px-2 py-0.5 rounded-full font-mono uppercase font-black tracking-wider animate-pulse flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-ping" />
-                  LIVE SESSION
-                </span>
+      {/* ==================== 1. PRE-FLIGHT LOBBY ENTRY SCREEN ==================== */}
+      {isLobby ? (
+        <div className="min-h-screen bg-[#07080d] text-gray-100 font-sans flex flex-col justify-between pb-12 relative overflow-hidden" id="interview-lobby-root">
+          <div className="absolute top-[-10%] left-[-10%] w-[600px] h-[600px] bg-purple-600/5 rounded-full blur-[140px] pointer-events-none" />
+          <div className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] bg-indigo-600/5 rounded-full blur-[140px] pointer-events-none" />
+
+          {/* Minimal header */}
+          <nav className="bg-[#0b0c13]/80 border-b border-white/5 py-4 px-6 md:px-12 backdrop-blur-md sticky top-0 z-40">
+            <div className="max-w-7xl mx-auto flex items-center justify-between">
+              <div className="flex items-center gap-3 cursor-pointer" onClick={() => onNavigate("dashboard")}>
+                <div className="bg-gradient-to-tr from-purple-600 to-indigo-600 p-2 rounded-xl shadow-md">
+                  <Brain className="w-5 h-5 text-white" />
+                </div>
+                <span className="font-display font-extrabold text-xl tracking-tight text-white">Mockit</span>
               </div>
-              <p className="text-xs text-gray-400">Assessed by AI Recruiter <span className="text-purple-400 font-semibold">{interviewerName}</span></p>
-            </div>
-          </div>
-
-          {/* Active Interview Metadata Center */}
-          <div className="flex flex-wrap items-center gap-3 bg-[#07080d]/80 border border-white/5 px-4 py-2.5 rounded-2xl">
-            {domain && (
-              <div className="flex items-center gap-1.5 text-xs text-gray-300 font-medium border-r border-white/5 pr-3">
-                <Tag className="w-3.5 h-3.5 text-purple-400" />
-                <span>{domain}</span>
-                <span className="text-gray-500 text-[10px] bg-white/5 px-1.5 py-0.5 rounded">{category}</span>
-              </div>
-            )}
-
-            {/* Difficulty Badge */}
-            <div className="flex items-center gap-1 border-r border-white/5 pr-3">
-              <span className={`text-[10px] font-extrabold uppercase tracking-widest px-2.5 py-0.5 rounded-md ${
-                currentDifficulty === "Advanced" ? "bg-red-500/10 text-red-400 border border-red-500/15 shadow-[0_0_12px_rgba(239,68,68,0.1)]" :
-                currentDifficulty === "Intermediate" ? "bg-amber-500/10 text-amber-400 border border-amber-500/15 shadow-[0_0_12px_rgba(245,158,11,0.1)]" :
-                "bg-indigo-500/10 text-indigo-400 border border-indigo-500/15 shadow-[0_0_12px_rgba(99,102,241,0.1)]"
-              }`}>
-                {currentDifficulty}
-              </span>
-            </div>
-
-            {/* Clock Timer */}
-            <div className="flex items-center gap-1.5 text-gray-300 font-mono text-xs">
-              <Timer className="w-3.5 h-3.5 text-purple-400 animate-spin [animation-duration:8s]" />
-              <span className="font-bold text-white bg-white/5 px-2 py-0.5 rounded tracking-wider">
-                {formatTime(elapsedSeconds)}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {/* Mute Button */}
-            <button
-              onClick={() => {
-                const nextMuted = !isMuted;
-                setIsMuted(nextMuted);
-                if (nextMuted) {
-                  if (synthRef.current) {
-                    synthRef.current.cancel();
-                  }
-                  if (audioRef.current) {
-                    audioRef.current.pause();
-                    audioRef.current.currentTime = 0;
-                  }
-                  setIsSpeaking(false);
-                } else if (!nextMuted && currentQuestionText) {
-                  speakText(currentQuestionText);
-                }
-              }}
-              className={`p-2.5 rounded-xl border transition-all cursor-pointer flex items-center gap-2 text-xs font-semibold ${
-                isMuted 
-                  ? "bg-red-500/10 text-red-400 border-red-500/20" 
-                  : "bg-white/5 text-gray-300 border-white/5 hover:bg-white/10"
-              }`}
-            >
-              {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-              <span className="hidden sm:inline">{isMuted ? "Voice Muted" : "Voice Enabled"}</span>
-            </button>
-
-            {/* End Early */}
-            <button
-              onClick={handleAbort}
-              className="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer hover:shadow-lg hover:shadow-red-500/5"
-            >
-              Terminate
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main content grid */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 grid grid-cols-1 lg:grid-cols-3 gap-6 py-6 overflow-hidden relative z-10" id="interview-workspace">
-        
-        {/* Left 2 Cols: Chat Feed & Controls */}
-        <div className="lg:col-span-2 flex flex-col h-full bg-[#0f111a] border border-white/5 rounded-2xl relative overflow-hidden shadow-2xl">
-          
-          {/* Active Question Bar */}
-          <div className="bg-[#141624] border-b border-white/5 p-4 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <span className="text-xs bg-purple-500/10 border border-purple-500/20 text-purple-400 px-2.5 py-1 rounded font-bold">
-                Q {currentQuestionIndex + 1} of {maxQuestions}
-              </span>
-              <span className="text-xs text-gray-400">Adaptive Progress Tracker</span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] text-gray-500 font-mono">Current Difficulty:</span>
-              <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
-                currentDifficulty === "Advanced" ? "bg-red-500/10 text-red-400 border border-red-500/20" :
-                currentDifficulty === "Intermediate" ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" :
-                "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20"
-              }`}>
-                {currentDifficulty}
-              </span>
-            </div>
-          </div>
-
-          {/* Messages Feed */}
-          <div className="flex-1 overflow-y-auto p-6 space-y-6" id="messages-feed-container">
-            {history.map((msg, idx) => (
-              <div 
-                key={idx}
-                className={`flex gap-4 max-w-[85%] ${msg.role === "candidate" ? "ml-auto flex-row-reverse" : "mr-auto"}`}
+              
+              <button
+                onClick={() => onNavigate("dashboard")}
+                className="px-4 py-2 bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 border border-white/5 cursor-pointer"
               >
-                {/* Avatar */}
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${
-                  msg.role === "candidate" 
-                    ? "bg-purple-600 text-white shadow-md shadow-purple-600/10" 
-                    : "bg-white/5 text-gray-300 border border-white/10"
-                }`}>
-                  {msg.role === "candidate" ? "U" : interviewerName[0]}
+                <ArrowLeft className="w-3.5 h-3.5" />
+                Exit to Dashboard
+              </button>
+            </div>
+          </nav>
+
+          {/* Main Lobby Space */}
+          <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8 md:py-12 flex flex-col justify-center relative z-10">
+            <div className="text-center max-w-2xl mx-auto mb-10">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-purple-500/10 border border-purple-500/20 text-purple-400 rounded-full text-[10px] font-mono uppercase tracking-widest font-black mb-3">
+                <Sparkles className="w-3.5 h-3.5" />
+                Pre-Flight Secure Entry
+              </div>
+              <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-white font-sans">
+                AI Interview Room Entrance
+              </h1>
+              <p className="text-sm text-gray-400 mt-2 leading-relaxed">
+                Before entering, verify your microphone input and configure the AI voice synthesis engine to guarantee a realistic conversational experience.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+              
+              {/* Left Box: Mic check */}
+              <div className="lg:col-span-7 bg-[#0b0c13] border border-white/5 rounded-2xl p-6 space-y-6 shadow-2xl">
+                <div className="flex items-center justify-between border-b border-white/5 pb-4">
+                  <h3 className="font-bold text-white text-base flex items-center gap-2">
+                    <Mic className="w-4 h-4 text-purple-400" />
+                    Step 1: Verify Microphone Input
+                  </h3>
+                  <span className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                    micPermission === "granted" ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20" : "bg-red-500/15 text-red-400 border border-red-500/20"
+                  }`}>
+                    {micPermission === "granted" ? "Verified" : "Action Required"}
+                  </span>
                 </div>
 
-                {/* Message Bubble */}
-                <div className="space-y-1">
-                  <div className={`p-4 rounded-2xl text-sm leading-relaxed ${
-                    msg.role === "candidate"
-                      ? "bg-purple-600/15 text-purple-100 rounded-tr-none border border-purple-500/20"
-                      : "bg-[#07080d] text-gray-200 rounded-tl-none border border-white/5"
-                  }`}>
-                    {msg.text}
-                  </div>
-
-                  {/* Rating / Constructive feedback display for candidate answers */}
-                  {msg.role === "candidate" && msg.score !== undefined && (
-                    <div className="bg-purple-500/5 border border-purple-500/10 rounded-xl p-3 text-xs space-y-1.5 max-w-lg mt-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-purple-400 font-semibold flex items-center gap-1">
-                          <Activity className="w-3.5 h-3.5" />
-                          Sophia's Score
-                        </span>
-                        <span className={`font-mono font-bold px-1.5 py-0.5 rounded ${
-                          msg.score >= 80 ? "bg-emerald-500/15 text-emerald-400" :
-                          msg.score >= 60 ? "bg-amber-500/15 text-amber-400" :
-                          "bg-red-500/15 text-red-400"
-                        }`}>
-                          {msg.score}/100
-                        </span>
+                {/* Visualized feedback feed box (16:9 meeting style) */}
+                <div className="bg-[#07080d] border border-white/5 rounded-xl aspect-[16/9] flex flex-col items-center justify-center p-6 relative overflow-hidden shadow-inner">
+                  {micPermission === "granted" ? (
+                    <div className="flex flex-col items-center justify-center space-y-6 w-full h-full relative z-10">
+                      <div className="w-20 h-20 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 relative">
+                        {/* Pulsing ring animation based on voice level */}
+                        <span className="absolute inset-0 bg-emerald-500/5 rounded-full animate-ping pointer-events-none" />
+                        <Mic className="w-8 h-8" />
                       </div>
-                      <p className="text-gray-400 italic font-medium leading-relaxed">
-                        "{msg.feedback}"
+                      
+                      <div className="text-center space-y-1">
+                        <p className="text-sm text-white font-bold">Microphone Connected Successfully</p>
+                        <p className="text-xs text-gray-400">Speak into your mic to test the real-time sound calibration.</p>
+                      </div>
+
+                      {/* Equalizer bars representing volume */}
+                      <div className="flex items-end justify-center gap-1.5 h-10 w-48 bg-[#0b0c13]/60 px-4 py-2 rounded-xl border border-white/5">
+                        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((bar) => {
+                          const scale = voiceLevel > 1 ? voiceLevel : 3;
+                          const heightPercent = Math.min(100, Math.max(10, (scale * (bar % 3 === 0 ? 1.5 : 1.1) * 3)));
+                          return (
+                            <span 
+                              key={bar} 
+                              className="w-1.5 bg-gradient-to-t from-emerald-500 to-teal-400 rounded-full transition-all duration-75"
+                              style={{ height: `${heightPercent}%` }}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center space-y-4 max-w-sm text-center relative z-10">
+                      <div className="w-16 h-16 rounded-full bg-purple-500/15 flex items-center justify-center text-purple-400">
+                        <MicOff className="w-6 h-6 animate-pulse" />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-sm font-bold text-white">Microphone Clearance Required</p>
+                        <p className="text-xs text-gray-400 leading-relaxed">
+                          To converse with Sophia or James, Mockit requires microphone authorization. Please click the button below to grant permission.
+                        </p>
+                      </div>
+                      <button
+                        onClick={requestMicPermission}
+                        className="px-5 py-2.5 bg-gradient-to-tr from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-lg shadow-purple-600/10 cursor-pointer hover:scale-[1.02]"
+                      >
+                        <Mic className="w-4 h-4" />
+                        Grant Microphone Access
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Google Chrome embed limitation alert banner */}
+                <div className="bg-amber-500/5 border border-amber-500/15 p-4 rounded-xl space-y-2.5">
+                  <div className="flex items-start gap-2.5 text-amber-400">
+                    <ShieldAlert className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="text-xs font-bold">Google Chrome Iframe Restrictions</p>
+                      <p className="text-[11px] text-gray-400 leading-relaxed">
+                        If you are viewing this app inside the Google AI Studio preview window, Chrome security policy blocks the network-based Web Speech API. For full hands-free voice control, please open this app in a separate browser tab.
                       </p>
                     </div>
-                  )}
-
-                  {/* Speaker helper button for questions */}
-                  {msg.role === "interviewer" && idx === history.length - 1 && !isCompleted && (
-                    <button 
-                      onClick={() => speakText(msg.text)}
-                      className="text-[10px] text-gray-500 hover:text-white flex items-center gap-1.5 mt-1 bg-white/5 hover:bg-white/10 px-2 py-1 rounded transition-colors cursor-pointer"
+                  </div>
+                  <div className="flex items-center gap-2 pt-1 border-t border-white/5">
+                    <a 
+                      href={window.location.href} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="px-3.5 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-white rounded-lg text-[10px] font-bold transition-all border border-amber-500/20 inline-flex items-center gap-1 cursor-pointer"
                     >
-                      <Volume2 className="w-3 h-3 text-purple-400 animate-pulse" />
-                      Replay Voice Question
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-
-            {/* AI Evaluation Loading Transition */}
-            {isEvaluating && (
-              <div className="flex gap-4 max-w-[85%] mr-auto">
-                <div className="w-8 h-8 rounded-full bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-xs text-purple-400">
-                  <Brain className="w-4 h-4 animate-bounce" />
-                </div>
-                <div className="space-y-3 flex-1">
-                  <div className="bg-[#0b0c13] text-gray-200 border border-purple-500/10 p-5 rounded-2xl rounded-tl-none text-sm space-y-3 shadow-lg shadow-purple-500/2">
-                    <div className="flex items-center gap-3">
-                      <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
-                      <span className="font-semibold text-white">AI Assessing Intake Metrics...</span>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-2 text-[10px] text-gray-400 font-mono">
-                      <div className="flex items-center gap-2 bg-[#07080d] p-2 rounded border border-white/5">
-                        <span className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-ping" />
-                        <span>Core Syntax Depth</span>
-                      </div>
-                      <div className="flex items-center gap-2 bg-[#07080d] p-2 rounded border border-white/5">
-                        <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-ping" />
-                        <span>Semantic Accuracy</span>
-                      </div>
-                      <div className="flex items-center gap-2 bg-[#07080d] p-2 rounded border border-white/5">
-                        <span className="w-1.5 h-1.5 bg-pink-400 rounded-full animate-ping" />
-                        <span>Tone & Delivery</span>
-                      </div>
-                      <div className="flex items-center gap-2 bg-[#07080d] p-2 rounded border border-white/5">
-                        <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-ping" />
-                        <span>Formulating Coaching</span>
-                      </div>
-                    </div>
-                    
-                    <p className="text-xs text-gray-400 italic">
-                      {interviewerName} is compiling real-time score feedback and calibrating the adaptive path...
-                    </p>
+                      Open in New Tab
+                    </a>
+                    <span className="text-[10px] text-gray-500">or proceed inside the frame and use manual keyboard typing as a fallback.</span>
                   </div>
                 </div>
               </div>
-            )}
 
-            <div ref={historyEndRef} />
-          </div>
-
-          {/* Interactive Microphone & Input Panel */}
-          <div className="bg-[#141624] border-t border-white/5 p-6 space-y-4">
-            
-            {/* Adaptive Status Banner */}
-            <div className="flex items-center justify-between text-xs bg-purple-500/5 border border-purple-500/10 rounded-xl px-4 py-2 text-purple-300">
-              <span className="flex items-center gap-2">
-                <span className="w-2 h-2 bg-purple-500 rounded-full animate-ping" />
-                <strong>Adaptive Engine Status:</strong> {adaptiveStatusMsg}
-              </span>
-              <span className="hidden md:inline font-mono text-[10px] text-gray-500">Live Feedback Channel</span>
-            </div>
-
-            {/* Error alerts */}
-            {recognitionError && (
-              <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-xs p-3.5 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-md shadow-red-500/2">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-400" />
-                  <span className="leading-relaxed">{recognitionError}</span>
-                </div>
-                <a 
-                  href={window.location.href} 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="bg-red-500/20 hover:bg-red-500/30 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition-all whitespace-nowrap text-center inline-block cursor-pointer border border-red-500/20"
-                >
-                  Open in New Tab
-                </a>
-              </div>
-            )}
-
-            {isCompleted ? (
-              <div className="bg-emerald-500/10 border border-emerald-500/20 p-6 rounded-2xl text-center space-y-4">
-                <div className="w-12 h-12 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto">
-                  <CheckCircle2 className="w-6 h-6 animate-bounce" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-white text-lg">Interview Completed Successfully</h3>
-                  <p className="text-xs text-gray-400 mt-1">
-                    Your assessment has been summarized and evaluated by the adaptive AI engine.
-                  </p>
-                </div>
-
-                <div className="max-w-xs mx-auto bg-[#0f111a] border border-white/5 rounded-xl p-4 flex items-center justify-between">
-                  <span className="text-xs text-gray-400">Consolidated Score:</span>
-                  <span className="font-display font-black text-2xl text-emerald-400">{overallScore}%</span>
-                </div>
-
-                <button
-                  onClick={() => onNavigate("dashboard")}
-                  className="bg-white hover:bg-gray-100 text-slate-950 font-bold px-6 py-2.5 rounded-xl text-xs transition-all cursor-pointer shadow-lg inline-flex items-center gap-1.5"
-                >
-                  Return to Dashboard
-                </button>
-              </div>
-            ) : (
-              <form onSubmit={handleSendResponse} className="space-y-4">
+              {/* Right Box: Setup & Voice Configuration */}
+              <div className="lg:col-span-5 space-y-6">
                 
-                {/* Wave Visualizer and Voice Recorder Ring */}
-                <div className="flex flex-col items-center justify-center py-6 bg-[#07080d]/60 rounded-2xl border border-white/5 relative overflow-hidden w-full">
+                {/* Interview Setup Summary Card */}
+                <div className="bg-[#0b0c13] border border-white/5 rounded-2xl p-6 space-y-4 shadow-xl">
+                  <h3 className="font-bold text-white text-base flex items-center gap-2 border-b border-white/5 pb-3">
+                    <Sliders className="w-4 h-4 text-purple-400" />
+                    Interview Parameters
+                  </h3>
                   
-                  {isListening ? (
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.15]">
-                      {/* Ambient glows */}
-                      <div className="w-40 h-40 bg-purple-500 rounded-full animate-ping absolute" />
-                      <div className="w-60 h-60 bg-indigo-500 rounded-full animate-ping absolute [animation-delay:0.5s]" />
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center bg-[#07080d] p-3 rounded-xl border border-white/5">
+                      <span className="text-xs text-gray-400">Interviewer Assessor</span>
+                      <span className="text-xs font-bold text-purple-400 flex items-center gap-1">
+                        {interviewerName === "Sophia" ? "Sophia (Female Lead)" : "James (Male VP)"}
+                      </span>
                     </div>
-                  ) : null}
+                    <div className="flex justify-between items-center bg-[#07080d] p-3 rounded-xl border border-white/5">
+                      <span className="text-xs text-gray-400">Domain / Focus Area</span>
+                      <span className="text-xs font-bold text-white">{domain}</span>
+                    </div>
+                    <div className="flex justify-between items-center bg-[#07080d] p-3 rounded-xl border border-white/5">
+                      <span className="text-xs text-gray-400">Pacing Level</span>
+                      <span className="text-xs font-bold text-white uppercase tracking-wider">{currentDifficulty}</span>
+                    </div>
+                    <div className="flex justify-between items-center bg-[#07080d] p-3 rounded-xl border border-white/5">
+                      <span className="text-xs text-gray-400">Target Category</span>
+                      <span className="text-xs font-bold text-white">{category}</span>
+                    </div>
+                  </div>
+                </div>
 
-                  {/* Audio Waveform Spectrum Visualization */}
-                  <div className="flex items-end justify-center gap-[3px] h-12 mb-6" id="audio-visualizer-spectrum">
-                    {isListening ? (
-                      // Interactive dynamic voice frequency spectrum
-                      [12, 28, 16, 42, 24, 48, 18, 36, 14, 28, 40, 22, 38, 16, 30, 12, 24, 34, 18, 10].map((height, i) => {
-                        const randomFactor = Math.random() * 0.5 + 0.5;
-                        const finalHeight = Math.round(height * randomFactor);
-                        const duration = `${(0.4 + Math.random() * 0.4).toFixed(2)}s`;
-                        const delay = `${(i * 0.04).toFixed(2)}s`;
-                        return (
-                          <span 
-                            key={i} 
-                            className="w-[3px] bg-gradient-to-t from-purple-500 via-pink-500 to-indigo-400 rounded-full animate-[pulse_0.4s_infinite_alternate]"
-                            style={{ 
-                              height: `${finalHeight}px`,
-                              animationDuration: duration,
-                              animationDelay: delay
-                            }}
-                          />
-                        );
-                      })
-                    ) : (
-                      // Silent ambient state with tiny dots
-                      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].map((dot) => (
-                        <span key={dot} className="w-[3px] h-[5px] bg-white/10 rounded-full transition-all duration-300" />
-                      ))
-                    )}
+                {/* Voice Synthesizer Configuration Card */}
+                <div className="bg-[#0b0c13] border border-white/5 rounded-2xl p-6 space-y-5 shadow-xl">
+                  <div className="flex items-center justify-between border-b border-white/5 pb-3">
+                    <h3 className="font-bold text-white text-base flex items-center gap-2">
+                      <Volume2 className="w-4 h-4 text-purple-400" />
+                      Step 2: Voice Customization
+                    </h3>
                   </div>
 
-                  <div className="flex items-center gap-6 z-10">
+                  {/* ElevenLabs premium switch */}
+                  <div className="bg-[#07080d] border border-white/5 rounded-xl p-3.5 flex items-center justify-between">
+                    <div className="space-y-0.5 max-w-[80%]">
+                      <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <Volume2 className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
+                        ElevenLabs Voice AI (Premium)
+                      </span>
+                      <p className="text-[10px] text-gray-400 leading-relaxed">
+                        Uses advanced expressive conversational models with real-world emotional range. Highly recommended.
+                      </p>
+                    </div>
                     <button
                       type="button"
-                      onClick={toggleListening}
-                      className={`w-16 h-16 rounded-full flex items-center justify-center border shadow-2xl transition-all duration-300 cursor-pointer ${
-                        isListening
-                          ? "bg-red-500 text-white border-red-600 scale-105 shadow-red-500/30 animate-pulse"
-                          : "bg-purple-600 text-white border-purple-500 hover:bg-purple-500 hover:scale-105 hover:shadow-purple-500/30"
+                      onClick={() => {
+                        setUseElevenLabs(prev => !prev);
+                        setElevenLabsError(null);
+                      }}
+                      className={`w-11 h-6 rounded-full transition-all duration-300 relative p-1 cursor-pointer flex items-center ${
+                        useElevenLabs ? "bg-purple-600 justify-end" : "bg-white/10 justify-start"
                       }`}
                     >
-                      {isListening ? (
-                        <MicOff className="w-6 h-6 animate-pulse" />
-                      ) : (
-                        <Mic className="w-6 h-6" />
-                      )}
+                      <span className="w-4 h-4 rounded-full bg-white block shadow" />
                     </button>
- 
-                    <div className="text-left">
-                      <h4 className="font-extrabold text-white text-sm tracking-tight flex items-center gap-2">
-                        {isListening ? (
+                  </div>
+
+                  {/* Test Voice Button */}
+                  {useElevenLabs && (
+                    <div className="space-y-3.5">
+                      <button
+                        type="button"
+                        onClick={testVoiceSynthesis}
+                        disabled={testingVoiceSynth}
+                        className="w-full py-2.5 bg-white/5 hover:bg-white/10 text-white rounded-xl text-xs font-bold transition-all border border-white/5 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                      >
+                        {testingVoiceSynth ? (
                           <>
-                            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
-                            Listening - Speak Now
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
+                            Synthesizing expressive test...
                           </>
                         ) : (
-                          "Tap Microphone to Speak"
+                          <>
+                            <Play className="w-3.5 h-3.5 text-purple-400" />
+                            Test Assessor Output
+                          </>
                         )}
-                      </h4>
-                      <p className="text-xs text-gray-400 mt-0.5 max-w-xs leading-relaxed">
-                        {isListening 
-                          ? "We are converting your speech to text in real-time. When finished, tap the red button to pause or edit." 
-                          : "Speak your mind naturally. Your voice is automatically transcribed and refined by AI."
-                        }
+                      </button>
+
+                      {/* Audio controller holder (hidden) */}
+                      <audio ref={audioRef} className="hidden" />
+
+                      {/* ElevenLabs API Key validation indicator error block */}
+                      {elevenLabsError && (
+                        <div className="bg-red-500/10 border border-red-500/20 p-3.5 rounded-xl space-y-2.5 shadow-md">
+                          <div className="flex items-start gap-2 text-red-400">
+                            <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                            <div className="space-y-1">
+                              <p className="text-xs font-bold">Voice Synthesis Error</p>
+                              <p className="text-[10px] text-gray-400 leading-normal">
+                                {elevenLabsError}
+                              </p>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setUseElevenLabs(false);
+                              setElevenLabsError(null);
+                            }}
+                            className="px-3 py-1.5 bg-red-500/15 hover:bg-red-500/25 text-white rounded-lg text-[9px] font-bold border border-red-500/25 cursor-pointer transition-colors"
+                          >
+                            Switch to System Fallback Voice
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* System TTS Settings (If ElevenLabs disabled) */}
+                  {!useElevenLabs && (
+                    <div className="space-y-3 pt-1">
+                      <div className="space-y-1">
+                        <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                          Select Fallback Browser Voice
+                        </label>
+                        {availableVoices.length === 0 ? (
+                          <span className="text-[11px] text-gray-500 italic block">
+                            Waiting for Chrome to load system voices...
+                          </span>
+                        ) : (
+                          <select
+                            value={selectedVoiceName}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setSelectedVoiceName(val);
+                              localStorage.setItem(`mockit_selected_voice_${interviewerName}`, val);
+                            }}
+                            className="w-full bg-[#07080d] border border-white/5 rounded-xl px-3 py-2 text-xs text-gray-300 outline-none focus:border-purple-500/50 cursor-pointer"
+                          >
+                            {availableVoices.map((v) => (
+                              <option key={v.name} value={v.name}>
+                                {v.name} ({v.lang})
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+
+                      <div className="space-y-1.5 pt-1">
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-gray-400">Voice Pitch Speed</span>
+                          <span className="text-purple-400 font-bold">{speechRate}x</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.5"
+                          max="2.0"
+                          step="0.1"
+                          value={speechRate}
+                          onChange={(e) => setSpeechRate(parseFloat(e.target.value))}
+                          className="w-full h-1 bg-[#07080d] accent-purple-500 rounded-lg cursor-pointer"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Connect lobby bottom bar */}
+            <div className="mt-12 flex flex-col items-center justify-center space-y-4 border-t border-white/5 pt-8">
+              <button
+                onClick={enterInterviewRoom}
+                disabled={micPermission !== "granted" && micPermission !== "denied"}
+                className="px-8 py-4 bg-gradient-to-r from-purple-600 via-indigo-600 to-indigo-700 hover:from-purple-500 hover:to-indigo-500 text-white font-extrabold text-sm rounded-xl transition-all shadow-xl shadow-purple-600/10 flex items-center gap-2 cursor-pointer hover:scale-[1.03] disabled:opacity-50"
+              >
+                <Sparkles className="w-4 h-4 animate-spin [animation-duration:4s]" />
+                Connect & Enter Interview Room
+              </button>
+              
+              {micPermission !== "granted" && (
+                <p className="text-xs text-gray-500">
+                  You can bypass microphone connection and type manually if you prefer.
+                </p>
+              )}
+            </div>
+          </main>
+        </div>
+      ) : (
+        // ==================== 2. REDESIGNED INTERVIEW ROOM WORKSPACE ====================
+        <div className="h-screen bg-[#07080d] text-gray-100 font-sans flex flex-col justify-between relative overflow-hidden" id="active-interview-inner">
+          
+          {/* Header bar showing only details requested */}
+          <header className="bg-[#0b0c13] border-b border-white/5 py-3 px-6 z-40">
+            <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+              
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={handleAbort}
+                  className="p-2 bg-white/5 hover:bg-white/10 rounded-lg border border-white/5 transition-all cursor-pointer text-gray-400 hover:text-white"
+                  title="Abort interview and back to dashboard"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                </button>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-extrabold text-white text-sm tracking-tight">Active Mock Interview</span>
+                    <span className="text-[8px] bg-red-500/10 text-red-400 border border-red-500/20 px-2 py-0.5 rounded font-mono font-black animate-pulse flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 bg-red-500 rounded-full" />
+                      SECURE LIVE FEED
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-gray-400">Assessed by AI Recruiter <span className="text-purple-400 font-semibold">{interviewerName}</span></p>
+                </div>
+              </div>
+
+              {/* Centered minimal details specified in prompt */}
+              <div className="hidden md:flex items-center gap-3 bg-[#07080d]/80 border border-white/5 px-4 py-2 rounded-xl">
+                <div className="flex items-center gap-1.5 text-xs text-gray-300 font-medium">
+                  <span className="text-gray-500 text-[10px] bg-white/5 px-1.5 py-0.5 rounded">{category}</span>
+                  <span className="text-gray-500">/</span>
+                  <span className="text-purple-300 font-bold">{domain}</span>
+                  <span className="text-gray-500">/</span>
+                  <span className="text-xs text-gray-400">Interviewer: {interviewerName === "Sophia" ? "Female" : "Male"}</span>
+                  <span className="text-gray-500">/</span>
+                  <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md ${
+                    currentDifficulty === "Advanced" ? "bg-red-500/10 text-red-400 border border-red-500/15" :
+                    currentDifficulty === "Intermediate" ? "bg-amber-500/10 text-amber-400 border border-amber-500/15" :
+                    "bg-indigo-500/10 text-indigo-400 border border-indigo-500/15"
+                  }`}>
+                    {currentDifficulty}
+                  </span>
+                </div>
+                
+                {/* Clock Timer */}
+                <div className="border-l border-white/5 pl-3 flex items-center gap-1.5 text-gray-300 font-mono text-xs">
+                  <Timer className="w-3.5 h-3.5 text-purple-400" />
+                  <span className="font-bold text-white">
+                    {formatTime(elapsedSeconds)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Toggle chat history panel */}
+                <button
+                  onClick={() => setIsSidebarOpen(prev => !prev)}
+                  className={`p-2.5 rounded-xl border transition-all cursor-pointer relative flex items-center gap-1.5 text-xs font-semibold ${
+                    isSidebarOpen 
+                      ? "bg-purple-600/10 text-purple-400 border-purple-500/30" 
+                      : "bg-white/5 text-gray-300 border-white/5 hover:bg-white/10"
+                  }`}
+                  title="Show Transcript & Live Feedback Chat"
+                >
+                  <MessageSquare className="w-4 h-4" />
+                  <span className="hidden sm:inline">Meeting Chat</span>
+                  {history.length > 1 && (
+                    <span className="absolute -top-1 -right-1 bg-purple-500 text-white text-[9px] font-black w-4.5 h-4.5 rounded-full flex items-center justify-center border border-[#07080d]">
+                      {history.length}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+            </div>
+          </header>
+
+          {/* Main interactive screen workspace */}
+          <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-4 flex gap-6 overflow-hidden relative z-10">
+            
+            {/* Left Area: Main centered Interview stage (Google Meet Tile) */}
+            <div className="flex-1 flex flex-col justify-between h-full relative">
+              
+              {/* Active Question Badge (Float top of the video feed) */}
+              <div className="absolute top-4 left-4 z-20 flex items-center gap-2 bg-[#0b0c13]/90 border border-white/5 rounded-lg px-3 py-1.5 backdrop-blur-md">
+                <span className="text-[10px] bg-purple-500/20 border border-purple-500/30 text-purple-400 px-2 py-0.5 rounded font-black">
+                  Q {currentQuestionIndex + 1} of {maxQuestions}
+                </span>
+                <span className="text-[10px] text-gray-400 font-medium">Adaptive Calibration Session</span>
+              </div>
+
+              {/* Center Space: Large AI Video-Like Assessor Feed Card */}
+              <div className="flex-1 bg-[#0b0c13] border border-white/5 rounded-2xl relative overflow-hidden flex flex-col justify-between p-6 shadow-2xl">
+                <div className="absolute top-0 right-0 w-48 h-48 bg-purple-500/5 rounded-full blur-3xl pointer-events-none" />
+
+                {/* Complete Performance Results Overlay */}
+                {isCompleted ? (
+                  <div className="absolute inset-0 bg-[#0b0c13]/98 flex flex-col items-center justify-center p-6 space-y-6 text-center z-30">
+                    <div className="w-16 h-16 bg-emerald-500/10 text-emerald-400 rounded-2xl flex items-center justify-center border border-emerald-500/20">
+                      <CheckCircle2 className="w-8 h-8 animate-bounce" />
+                    </div>
+                    <div className="space-y-1.5 max-w-md">
+                      <h3 className="font-display font-extrabold text-white text-2xl">Interview Completed</h3>
+                      <p className="text-xs text-gray-400 leading-relaxed">
+                        Your response metrics have been compiled and evaluated by Sophia and the adaptive platform. Your results are live.
                       </p>
+                    </div>
+
+                    <div className="max-w-xs w-full bg-[#07080d] border border-white/5 rounded-xl p-4 flex items-center justify-between">
+                      <span className="text-xs text-gray-400 font-medium">Consolidated Score:</span>
+                      <span className="font-display font-black text-3xl text-emerald-400 tracking-tight">{overallScore}%</span>
+                    </div>
+
+                    <button
+                      onClick={() => onNavigate("dashboard")}
+                      className="bg-white hover:bg-gray-100 text-slate-950 font-extrabold px-6 py-3 rounded-xl text-xs transition-all cursor-pointer shadow-lg inline-flex items-center gap-1.5 hover:scale-[1.02]"
+                    >
+                      Return to Dashboard
+                    </button>
+                  </div>
+                ) : null}
+
+                {/* AI speaking / listening errors display block */}
+                {elevenLabsError && (
+                  <div className="absolute top-16 left-4 right-4 z-20 bg-red-500/10 border border-red-500/20 text-red-400 text-xs p-3.5 rounded-xl flex items-center justify-between gap-3 shadow-lg">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-400" />
+                      <div className="space-y-0.5">
+                        <p className="font-bold text-white text-xs">Premium Voice AI Offline</p>
+                        <p className="text-gray-400 text-[11px] leading-relaxed">{elevenLabsError}</p>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        setUseElevenLabs(false);
+                        setElevenLabsError(null);
+                        if (currentQuestionText) speakText(currentQuestionText, undefined, undefined);
+                      }}
+                      className="bg-red-500/20 hover:bg-red-500/30 text-white font-bold px-3 py-1.5 rounded-lg text-[10px] border border-red-500/20 transition-all whitespace-nowrap cursor-pointer"
+                    >
+                      Fallback to Browser Voice
+                    </button>
+                  </div>
+                )}
+
+                {/* Speech recognition errors block */}
+                {recognitionError && !elevenLabsError && (
+                  <div className="absolute top-16 left-4 right-4 z-20 bg-red-500/15 border border-red-500/20 text-red-400 text-xs p-3.5 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-md">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-400" />
+                      <span className="leading-relaxed">{recognitionError}</span>
+                    </div>
+                    <a 
+                      href={window.location.href} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="bg-red-500/20 hover:bg-red-500/30 text-white font-bold px-3 py-1.5 rounded-lg text-[10px] transition-all whitespace-nowrap text-center inline-block cursor-pointer border border-red-500/20"
+                    >
+                      Open in New Tab
+                    </a>
+                  </div>
+                )}
+
+                {/* Absolute Center: Assessor Live Orb (Meeting Avatar Feed) */}
+                <div className="flex-1 flex flex-col items-center justify-center space-y-6">
+                  
+                  {/* Orb Wrapper */}
+                  <div className="relative">
+                    
+                    {/* Glowing Concentric rings for active AI actions */}
+                    {isSpeaking && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="w-36 h-36 bg-purple-500/10 rounded-full animate-ping absolute" />
+                        <div className="w-48 h-48 bg-indigo-500/10 rounded-full animate-ping absolute [animation-delay:0.5s]" />
+                      </div>
+                    )}
+
+                    {isListening && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="w-36 h-36 bg-emerald-500/15 rounded-full animate-ping absolute" />
+                        <div className="w-48 h-48 bg-teal-500/10 rounded-full animate-ping absolute [animation-delay:0.5s]" />
+                      </div>
+                    )}
+
+                    {isEvaluating && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="w-40 h-40 border border-purple-500/20 rounded-full animate-spin absolute [animation-duration:3s]" />
+                        <div className="w-44 h-44 border border-dashed border-indigo-500/15 rounded-full animate-spin absolute [animation-duration:8s] [animation-direction:reverse]" />
+                      </div>
+                    )}
+
+                    {/* Main Orb Body */}
+                    <div className={`w-28 h-28 rounded-full flex flex-col items-center justify-center font-display text-3xl font-black text-white relative shadow-2xl transition-all duration-500 border border-white/5 ${
+                      isListening
+                        ? "bg-gradient-to-tr from-emerald-600 via-teal-500 to-emerald-500 shadow-emerald-500/20 scale-105"
+                        : isEvaluating
+                        ? "bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-500 shadow-indigo-500/20 animate-pulse"
+                        : isSpeaking
+                        ? "bg-gradient-to-tr from-purple-600 via-pink-600 to-indigo-600 shadow-purple-600/20 scale-105"
+                        : "bg-[#07080d] border border-white/10"
+                    }`}>
+                      {interviewerName[0]}
+
+                      {/* Equalizer animation overlays */}
+                      {isSpeaking && (
+                        <div className="absolute bottom-4 flex gap-0.5 items-center justify-center">
+                          <span className="w-0.5 h-2 bg-white/70 rounded-full animate-bounce [animation-duration:0.6s]" />
+                          <span className="w-0.5 h-3 bg-white/90 rounded-full animate-bounce [animation-duration:0.4s]" />
+                          <span className="w-0.5 h-1.5 bg-white/50 rounded-full animate-bounce [animation-duration:0.8s]" />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Miniature status badge overlay on Orb bottom-right */}
+                    <div className={`absolute bottom-0 right-1 w-6 h-6 rounded-full border-2 border-[#0b0c13] flex items-center justify-center shadow-lg transition-colors ${
+                      isListening ? "bg-emerald-500 text-white" :
+                      isEvaluating ? "bg-indigo-500 text-white" :
+                      isSpeaking ? "bg-purple-500 text-white" : "bg-gray-700 text-gray-400"
+                    }`}>
+                      {isListening ? <Mic className="w-3 h-3" /> :
+                       isEvaluating ? <Brain className="w-3 h-3" /> :
+                       isSpeaking ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
                     </div>
                   </div>
 
+                  {/* Status Label */}
+                  <div className="text-center space-y-1 z-10">
+                    <div className="text-xs font-mono uppercase tracking-widest text-gray-500 font-bold">
+                      Assessor Feedback Frame
+                    </div>
+                    <h4 className="text-base font-extrabold text-white">
+                      {isListening ? (
+                        <span className="text-emerald-400 flex items-center gap-1.5 justify-center">
+                          <span className="w-2 h-2 bg-emerald-400 rounded-full animate-ping" />
+                          Listening - Speak Now
+                        </span>
+                      ) : isEvaluating ? (
+                        <span className="text-indigo-400 flex items-center gap-1.5 justify-center">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Assessing answer metrics...
+                        </span>
+                      ) : isSpeaking ? (
+                        <span className="text-purple-400 flex items-center gap-1.5 justify-center">
+                          <span className="w-2 h-2 bg-purple-500 rounded-full animate-ping" />
+                          {interviewerName} is speaking...
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">Idle - Click Microphone to Respond</span>
+                      )}
+                    </h4>
+                  </div>
                 </div>
 
-                {/* Edit & Manual input field fallback */}
-                <div className="flex items-center gap-3">
+                {/* Redesigned bottom section overlay: Subtitles / Closed Captions */}
+                <div className="bg-[#07080d]/80 backdrop-blur border border-white/5 rounded-xl p-4 flex gap-3 items-start w-full relative z-10 shadow-lg">
+                  <span className="text-[10px] font-black uppercase tracking-wider bg-white/5 border border-white/10 px-2 py-0.5 rounded text-gray-400 flex items-center gap-1 mt-0.5">
+                    CC
+                  </span>
+                  <div className="flex-1 space-y-1">
+                    {isSpeaking ? (
+                      <p className="text-sm text-purple-200 leading-relaxed font-medium">
+                        {currentQuestionText}
+                      </p>
+                    ) : isListening && userInput ? (
+                      <p className="text-sm text-emerald-200 leading-relaxed font-sans italic">
+                        "{userInput}"
+                      </p>
+                    ) : isListening ? (
+                      <p className="text-xs text-gray-500 italic">
+                        Waiting for speech transcription... (You can also type by click the keyboard icon below)
+                      </p>
+                    ) : (
+                      <p className="text-sm text-gray-400 leading-relaxed">
+                        {currentQuestionText || "Calibration completed. Begin by activating your mic stream."}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Collapsible Manual Input Panel (Floating below virtual meeting feed) */}
+              {isKeyboardOpen && !isCompleted && (
+                <div className="mt-4 bg-[#0b0c13] border border-purple-500/20 p-4 rounded-xl shadow-xl flex gap-3 items-center relative z-20">
                   <input
                     type="text"
                     value={userInput}
                     onChange={(e) => setUserInput(e.target.value)}
-                    placeholder="Type or edit your transcribed response..."
+                    placeholder="Type or correct your transcribed response manually here..."
                     disabled={isEvaluating}
-                    className="flex-1 bg-[#07080d] border border-white/5 focus:border-purple-500/50 rounded-xl px-4 py-3 text-sm text-gray-200 outline-none transition-all placeholder:text-gray-600 disabled:opacity-50"
+                    className="flex-1 bg-[#07080d] border border-white/5 focus:border-purple-500/50 rounded-lg px-4 py-3 text-sm text-gray-200 outline-none transition-all placeholder:text-gray-600 disabled:opacity-50"
                   />
-
                   {userInput.trim() && (
                     <button
-                      type="submit"
+                      onClick={() => handleSendResponse()}
                       disabled={isEvaluating}
-                      className="bg-purple-600 hover:bg-purple-500 text-white p-3.5 rounded-xl transition-colors shadow-lg shadow-purple-600/10 cursor-pointer disabled:opacity-50 flex items-center justify-center"
-                      title="Submit Answer"
+                      className="bg-purple-600 hover:bg-purple-500 text-white p-3 rounded-lg transition-colors shadow-lg cursor-pointer disabled:opacity-50 flex items-center justify-center flex-shrink-0"
+                      title="Submit Response"
                     >
                       <Send className="w-4 h-4" />
                     </button>
                   )}
                 </div>
+              )}
 
-                <div className="flex items-center justify-between text-[11px] text-gray-500 px-1">
-                  <span>Press enter or click Send to submit your answer.</span>
-                  <span>Supports complete voice editing.</span>
+              {/* Centered Horizontal Toolbar (Google Meet/Teams Style) */}
+              <div className="py-4 flex justify-center">
+                <div className="bg-[#0b0c13] border border-white/5 rounded-full px-5 py-3 flex items-center gap-4.5 shadow-2xl relative z-20">
+                  
+                  {/* 1. Mute/Voice Control */}
+                  <button
+                    onClick={() => {
+                      const nextVal = !useElevenLabs;
+                      setUseElevenLabs(nextVal);
+                      setElevenLabsError(null);
+                      if (currentQuestionText) speakText(currentQuestionText, undefined, undefined);
+                    }}
+                    className={`p-2.5 rounded-full border transition-all cursor-pointer ${
+                      useElevenLabs 
+                        ? "bg-purple-600/10 text-purple-400 border-purple-500/20 hover:bg-purple-600/15" 
+                        : "bg-white/5 text-gray-400 border-white/5 hover:bg-white/10"
+                    }`}
+                    title={useElevenLabs ? "ElevenLabs Active (Expressive)" : "System Default (Standard)"}
+                  >
+                    {useElevenLabs ? <Volume2 className="w-4.5 h-4.5" /> : <VolumeX className="w-4.5 h-4.5" />}
+                  </button>
+
+                  {/* 2. Replay Last Question */}
+                  <button
+                    onClick={() => currentQuestionText && speakText(currentQuestionText)}
+                    className="p-2.5 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white border border-white/5 rounded-full transition-all cursor-pointer"
+                    title="Replay Voice Question"
+                    disabled={isCompleted}
+                  >
+                    <RotateCcw className="w-4.5 h-4.5" />
+                  </button>
+
+                  {/* 3. Primary Microphone Toggle Button (Large in center) */}
+                  <button
+                    onClick={toggleListening}
+                    disabled={isCompleted}
+                    className={`w-14 h-14 rounded-full flex items-center justify-center border shadow-xl transition-all duration-300 cursor-pointer disabled:opacity-50 ${
+                      isListening
+                        ? "bg-red-500 border-red-600 text-white scale-105 shadow-red-500/20 hover:bg-red-600 animate-pulse"
+                        : "bg-purple-600 border-purple-500 text-white hover:bg-purple-500 hover:scale-105 shadow-purple-600/10"
+                    }`}
+                    title={isListening ? "Pause Voice Capture" : "Activate Microphone"}
+                  >
+                    {isListening ? (
+                      <MicOff className="w-5.5 h-5.5" />
+                    ) : (
+                      <Mic className="w-5.5 h-5.5" />
+                    )}
+                  </button>
+
+                  {/* 4. Manual Input Form Toggle */}
+                  <button
+                    onClick={() => setIsKeyboardOpen(prev => !prev)}
+                    className={`p-2.5 rounded-full border transition-all cursor-pointer ${
+                      isKeyboardOpen 
+                        ? "bg-indigo-600/15 text-indigo-400 border-indigo-500/20" 
+                        : "bg-white/5 text-gray-400 border-white/5 hover:bg-white/10"
+                    }`}
+                    title="Toggle Manual Keyboard Entry"
+                    disabled={isCompleted}
+                  >
+                    <Keyboard className="w-4.5 h-4.5" />
+                  </button>
+
+                  {/* Divider */}
+                  <span className="w-[1px] h-6 bg-white/10" />
+
+                  {/* 5. End Early Hang up Button (Crimson) */}
+                  <button
+                    onClick={handleAbort}
+                    className="p-3 bg-red-600/10 hover:bg-red-600 text-red-400 hover:text-white border border-red-500/20 rounded-full transition-all cursor-pointer shadow-lg hover:shadow-red-500/10 flex items-center justify-center"
+                    title="End Interview early"
+                  >
+                    <PhoneOff className="w-4.5 h-4.5" />
+                  </button>
+
+                </div>
+              </div>
+            </div>
+
+            {/* Right Area: Collapsible Transcript Sidebar Drawer (Slide out meeting chat) */}
+            {isSidebarOpen && (
+              <div className="w-80 md:w-96 bg-[#0b0c13] border-l border-white/5 flex flex-col justify-between h-full relative z-30 shadow-2xl animate-[slideIn_0.25s_ease-out]">
+                
+                {/* Sidebar Header */}
+                <div className="p-4 border-b border-white/5 flex items-center justify-between bg-[#10111a]">
+                  <div className="flex items-center gap-2">
+                    <MessageSquare className="w-4.5 h-4.5 text-purple-400" />
+                    <span className="font-extrabold text-sm text-white">Meeting Chat & Scores</span>
+                  </div>
+                  <button 
+                    onClick={() => setIsSidebarOpen(false)}
+                    className="text-xs text-gray-500 hover:text-white bg-white/5 px-2 py-1 rounded transition-colors cursor-pointer"
+                  >
+                    Hide Panel
+                  </button>
                 </div>
 
-              </form>
+                {/* Sidebar Feed */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
+                  
+                  {/* Adaptive path badge indicator */}
+                  <div className="p-3 bg-purple-500/5 border border-purple-500/10 rounded-xl text-[10px] text-gray-400 leading-relaxed space-y-1">
+                    <p className="font-bold text-purple-300">Sophia's Adaptive Engine Pacing:</p>
+                    <p>Metrics adapt to individual accuracy. Strong answers elevate core category syntax questions.</p>
+                  </div>
+
+                  {history.map((msg, idx) => (
+                    <div 
+                      key={idx}
+                      className={`flex flex-col gap-1 max-w-[95%] ${msg.role === "candidate" ? "ml-auto text-right" : "mr-auto text-left"}`}
+                    >
+                      <span className="text-[9px] font-mono text-gray-500">
+                        {msg.role === "candidate" ? "Candidate" : `${interviewerName} (Assessor)`}
+                      </span>
+                      
+                      <div className={`p-3 rounded-xl text-xs leading-relaxed ${
+                        msg.role === "candidate"
+                          ? "bg-purple-600/10 text-purple-100 rounded-tr-none border border-purple-500/20 text-left ml-auto"
+                          : "bg-[#07080d] text-gray-300 rounded-tl-none border border-white/5 text-left mr-auto"
+                      }`}>
+                        {msg.text}
+                      </div>
+
+                      {/* Rating / Real-time score details */}
+                      {msg.role === "candidate" && msg.score !== undefined && (
+                        <div className="bg-purple-500/5 border border-purple-500/10 rounded-lg p-2.5 text-[11px] space-y-1 mt-1 text-left">
+                          <div className="flex items-center justify-between">
+                            <span className="text-purple-400 font-bold flex items-center gap-1 text-[10px]">
+                              <Activity className="w-3 h-3" />
+                              Evaluation Metric
+                            </span>
+                            <span className={`font-mono font-black text-[10px] px-1 rounded ${
+                              msg.score >= 80 ? "bg-emerald-500/10 text-emerald-400" :
+                              msg.score >= 60 ? "bg-amber-500/10 text-amber-400" : "bg-red-500/10 text-red-400"
+                            }`}>
+                              {msg.score}/100
+                            </span>
+                          </div>
+                          <p className="text-gray-400 italic text-[11px] leading-relaxed">
+                            "{msg.feedback}"
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  
+                  <div ref={historyEndRef} />
+                </div>
+
+                {/* Sidebar quick footer summary */}
+                <div className="p-4 bg-[#10111a] border-t border-white/5 text-[10px] text-gray-500 text-center leading-relaxed">
+                  Real-time calibration active. Scores are calculated using structural semantic grammar algorithms.
+                </div>
+
+              </div>
             )}
 
-          </div>
+          </main>
 
         </div>
-
-        {/* Right 1 Col: Assessor Persona & Voice Options */}
-        <div className="lg:col-span-1 h-full overflow-y-auto pr-1 pb-4 space-y-6 scrollbar-thin">
-          
-          {/* Persona Card */}
-          <div className="bg-[#0f111a] border border-white/5 rounded-2xl p-6 relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full blur-2xl pointer-events-none" />
-            
-            <h3 className="font-display font-bold text-white text-base mb-4 flex items-center gap-2">
-              <User className="w-4 h-4 text-purple-400" />
-              Active AI Assessor
-            </h3>
-
-            <div className="flex items-start gap-4 mb-4">
-              <div className={`w-14 h-14 rounded-2xl flex items-center justify-center font-display font-black text-xl text-white shadow-lg ${
-                interviewerName === "Sophia" 
-                  ? "bg-gradient-to-tr from-purple-500 to-pink-500 shadow-purple-500/10" 
-                  : "bg-gradient-to-tr from-indigo-500 to-blue-500 shadow-indigo-500/10"
-              }`}>
-                {interviewerName[0]}
-              </div>
-
-              <div>
-                <h4 className="font-extrabold text-white text-lg leading-snug">{interviewerName}</h4>
-                <span className="text-[10px] bg-purple-500/10 text-purple-400 border border-purple-500/25 font-mono px-2 py-0.5 rounded uppercase font-semibold mt-1 inline-block">
-                  {interviewerName === "Sophia" ? "Staff Lead Engineer" : "VP Executive Recruiter"}
-                </span>
-              </div>
-            </div>
-
-            <p className="text-gray-400 text-xs leading-relaxed border-t border-white/5 pt-3.5 pb-3">
-              {interviewerName === "Sophia" 
-                ? "A thorough and encouraging assessor who focuses deeply on architectural trade-offs, scalability, code hygiene, and structural concepts."
-                : "An executive recruiter with an objective, fast-paced evaluation style, prioritizing direct commercial outcomes and structured STAR story methods."
-              }
-            </p>
-
-            {/* AI Real-time Audio Speaking & Listening States */}
-            <div className="border-t border-white/5 pt-3 space-y-2.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Assessor Vocalizer</span>
-                {isSpeaking ? (
-                  <div className="flex items-center gap-1.5 text-xs text-purple-400 font-bold">
-                    <div className="flex gap-0.5 items-center">
-                      <span className="w-0.5 h-3 bg-purple-400 rounded-full animate-bounce [animation-duration:0.6s]" />
-                      <span className="w-0.5 h-4.5 bg-purple-400 rounded-full animate-bounce [animation-duration:0.4s]" />
-                      <span className="w-0.5 h-2 bg-purple-400 rounded-full animate-bounce [animation-duration:0.8s]" />
-                    </div>
-                    <span>Speaking</span>
-                  </div>
-                ) : (
-                  <span className="text-[10px] text-gray-500 font-semibold uppercase">Idle</span>
-                )}
-              </div>
-
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider">Candidate Mic Intake</span>
-                {isListening ? (
-                  <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-bold">
-                    <span className="w-2 h-2 bg-emerald-400 rounded-full animate-ping" />
-                    <span>Listening</span>
-                  </div>
-                ) : (
-                  <span className="text-[10px] text-gray-500 font-semibold uppercase">Off</span>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Voice Tuning Dashboard */}
-          <div className="bg-[#0f111a] border border-white/5 rounded-2xl p-6 space-y-5">
-            <h3 className="font-display font-bold text-white text-base flex items-center gap-2">
-              <Sliders className="w-4 h-4 text-purple-400" />
-              Voice Synth Controller
-            </h3>
-
-            {/* Premium Voice Toggle */}
-            <div className="bg-[#141624] border border-white/5 rounded-xl p-3.5 flex items-center justify-between">
-              <div className="space-y-0.5">
-                <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <Volume2 className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
-                  ElevenLabs Voice AI
-                </span>
-                <p className="text-[10px] text-gray-400 leading-normal">
-                  {useElevenLabs 
-                    ? "Premium hyper-realistic voices active." 
-                    : "Standard web speech synthesis."
-                  }
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  const nextVal = !useElevenLabs;
-                  setUseElevenLabs(nextVal);
-                  if (currentQuestionText) speakText(currentQuestionText, undefined, undefined);
-                }}
-                className={`w-11 h-6 rounded-full transition-all duration-300 relative p-1 cursor-pointer flex items-center ${
-                  useElevenLabs ? "bg-purple-600 justify-end" : "bg-white/10 justify-start"
-                }`}
-              >
-                <span className="w-4 h-4 rounded-full bg-white block shadow" />
-              </button>
-            </div>
-
-            {/* Voice Select */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label className="block text-[11px] font-bold text-gray-400 uppercase tracking-wider">
-                  Select Speech Synthesis Voice
-                </label>
-                {useElevenLabs && (
-                  <span className="text-[9px] bg-purple-500/10 text-purple-400 border border-purple-500/20 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
-                    Fallback Active
-                  </span>
-                )}
-              </div>
-              
-              {availableVoices.length === 0 ? (
-                <span className="text-xs text-gray-500 italic block">
-                  Loading system voice profiles...
-                </span>
-              ) : (
-                <select
-                  value={selectedVoiceName}
-                  onChange={(e) => {
-                    const newVoiceName = e.target.value;
-                    setSelectedVoiceName(newVoiceName);
-                    const savedVoiceKey = `mockit_selected_voice_${interviewerName}`;
-                    localStorage.setItem(savedVoiceKey, newVoiceName);
-                    if (currentQuestionText) speakText(currentQuestionText, newVoiceName);
-                  }}
-                  className="w-full bg-[#07080d] border border-white/5 rounded-xl px-3 py-2 text-xs text-gray-300 outline-none focus:border-purple-500/50 cursor-pointer"
-                >
-                  {availableVoices.map((v) => (
-                    <option key={v.name} value={v.name}>
-                      {v.name} ({v.lang})
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-
-            {/* Speech Rate */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Speech Speed</span>
-                <span className="font-mono text-purple-400 font-bold text-xs">{speechRate}x</span>
-              </div>
-              <input
-                type="range"
-                min="0.5"
-                max="2.0"
-                step="0.1"
-                value={speechRate}
-                onChange={(e) => {
-                  const rate = parseFloat(e.target.value);
-                  setSpeechRate(rate);
-                  if (currentQuestionText) speakText(currentQuestionText, undefined, rate);
-                }}
-                className="w-full h-1 bg-[#07080d] accent-purple-500 rounded-lg appearance-none cursor-pointer"
-              />
-            </div>
-
-            {/* Quick Helper Notes */}
-            <div className="bg-purple-500/5 border border-purple-500/10 p-3.5 rounded-xl text-[10px] text-gray-400 leading-relaxed space-y-1.5">
-              <div className="flex items-center gap-1 text-purple-300 font-semibold text-xs">
-                <HelpCircle className="w-3.5 h-3.5" />
-                <span>Interviewer Tips</span>
-              </div>
-              <p>1. Tap the mic button and state your response naturally.</p>
-              <p>2. Sophia dynamically gauges your technical knowledge and raises the difficulty as you perform well.</p>
-              <p>3. If you struggle, Sophia will offer encouraging hints and easier questions to build confidence.</p>
-            </div>
-
-          </div>
-
-          {/* Quick Metrics display */}
-          <div className="bg-gradient-to-tr from-purple-950/20 to-[#0f111a] border border-purple-500/15 rounded-2xl p-6 space-y-4">
-            <h3 className="font-display font-semibold text-purple-400 text-sm flex items-center gap-1.5">
-              <TrendingUp className="w-4 h-4" />
-              Real-time Calibration
-            </h3>
-            
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-[#07080d] border border-white/5 p-3 rounded-xl">
-                <span className="text-[10px] text-gray-500 uppercase font-bold block mb-1">Target Pace</span>
-                <span className="text-white text-xs font-semibold">Standard</span>
-              </div>
-              <div className="bg-[#07080d] border border-white/5 p-3 rounded-xl">
-                <span className="text-[10px] text-gray-500 uppercase font-bold block mb-1">Stability</span>
-                <span className="text-emerald-400 text-xs font-semibold">98.2%</span>
-              </div>
-            </div>
-
-            <p className="text-[11px] text-gray-400 leading-relaxed">
-              Assessor is tuned to your candidate level. Feedback scores automatically translate to global standings on completion.
-            </p>
-          </div>
-
-        </div>
-
-      </main>
-
+      )}
     </div>
   );
 }

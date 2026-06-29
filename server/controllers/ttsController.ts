@@ -45,11 +45,11 @@ export async function textToSpeech(req: Request, res: Response) {
       },
       body: JSON.stringify({
         text: cleanText,
-        model_id: "eleven_monolingual_v1", // Optimized for ultra-low latency & natural expression
+        model_id: "eleven_multilingual_v2", // Upgraded to multilingual for natural conversational speed & Hindi comforting phrases
         voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75,
-          style: 0.05,
+          stability: 0.35, // Lowered stability slightly to allow realistic voice variations, speed shifts and emotional cues
+          similarity_boost: 0.85, // High similarity to preserve natural vocal clarity
+          style: 0.15, // Enhanced style for natural expressive range
           use_speaker_boost: true
         }
       })

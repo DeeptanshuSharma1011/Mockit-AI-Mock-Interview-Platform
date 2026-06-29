@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { signup, login, getUserProfile } from "../controllers/authController";
 import { updateUserAnalytics } from "../controllers/analyticsController";
-import { getDashboardData, createInterviewSetup, completeInterview } from "../controllers/interviewController";
+import { getDashboardData, createInterviewSetup, completeInterview, getInterviewDetails } from "../controllers/interviewController";
 import { startInterview, submitAnswer, concludeInterviewEarly } from "../controllers/aiInterviewController";
 import { textToSpeech } from "../controllers/ttsController";
 import { authenticateToken } from "../middleware/auth";
@@ -18,6 +18,7 @@ router.post("/analytics/update", authenticateToken as any, updateUserAnalytics a
 
 // Dashboard & Session Scheduling Endpoints
 router.get("/dashboard", authenticateToken as any, getDashboardData as any);
+router.get("/interviews/:id", authenticateToken as any, getInterviewDetails as any);
 router.post("/interviews/setup", authenticateToken as any, createInterviewSetup as any);
 router.post("/interviews/:id/complete", authenticateToken as any, completeInterview as any);
 
