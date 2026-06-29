@@ -689,7 +689,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   }
 
   return (
-    <div className="h-screen bg-[#07080d] text-gray-100 font-sans flex flex-col justify-between relative overflow-hidden" id="active-interview-root">
+    <div className={`${isLobby ? "min-h-screen overflow-y-auto scroll-smooth" : "h-screen overflow-hidden"} bg-[#07080d] text-gray-100 font-sans flex flex-col justify-between relative`} id="active-interview-root">
       
       {/* Background ambient radial glows */}
       <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] bg-purple-600/5 rounded-full blur-[140px] pointer-events-none" />
@@ -697,7 +697,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
 
       {/* ==================== 1. PRE-FLIGHT LOBBY ENTRY SCREEN ==================== */}
       {isLobby ? (
-        <div className="min-h-screen bg-[#07080d] text-gray-100 font-sans flex flex-col justify-between pb-12 relative overflow-hidden" id="interview-lobby-root">
+        <div className="min-h-screen bg-[#07080d] text-gray-100 font-sans flex flex-col justify-between pb-12 relative overflow-visible" id="interview-lobby-root">
           <div className="absolute top-[-10%] left-[-10%] w-[600px] h-[600px] bg-purple-600/5 rounded-full blur-[140px] pointer-events-none" />
           <div className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] bg-indigo-600/5 rounded-full blur-[140px] pointer-events-none" />
 
@@ -722,7 +722,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
           </nav>
 
           {/* Main Lobby Space */}
-          <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8 md:py-12 flex flex-col justify-center relative z-10">
+          <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8 md:py-12 flex flex-col justify-start relative z-10">
             <div className="text-center max-w-2xl mx-auto mb-10">
               <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-purple-500/10 border border-purple-500/20 text-purple-400 rounded-full text-[10px] font-mono uppercase tracking-widest font-black mb-3">
                 <Sparkles className="w-3.5 h-3.5" />
