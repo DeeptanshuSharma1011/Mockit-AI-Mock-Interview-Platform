@@ -6,9 +6,14 @@ const rawUrl = process.env.SUPABASE_URL || "https://cllimzumlyfxanhyukbh.supabas
 // Automatically clean up URL: strip trailing '/rest/v1/' or '/rest/v1' and any trailing slashes.
 // The Supabase JS library expects the clean base domain and appends '/rest/v1' automatically.
 export const SUPABASE_URL = rawUrl.replace(/\/rest\/v1\/?$/, "").replace(/\/+$/, "");
-const rawKey = process.env.SUPABASE_PUBLIC_KEY;
-export const SUPABASE_PUBLIC_KEY = (rawKey && rawKey.startsWith("eyJ")) 
-  ? rawKey 
+
+// Check for service role keys first (for safe backend admin access bypassing RLS), then public key
+const rawServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+const rawPublicKey = process.env.SUPABASE_PUBLIC_KEY;
+const rawKey = rawServiceKey || rawPublicKey;
+
+export const SUPABASE_PUBLIC_KEY = (rawKey && rawKey.trim().startsWith("eyJ")) 
+  ? rawKey.trim() 
   : "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNsbGltenVtbHlmeGFuaHl1a2JoIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MjY1ODYzMywiZXhwIjoyMDk4MjM0NjMzfQ.xSjftO1LJu4eywWUifHLfLovz3trBi7LcbY6fwohfiI";
 
 export let isUsingMockDB = false;
