@@ -83,6 +83,8 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   const historyEndRef = useRef<HTMLDivElement>(null);
   const isMountedRef = useRef(true);
   const evalTimeoutRef = useRef<any>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [useElevenLabs, setUseElevenLabs] = useState(true);
 
   // Load Speech Synthesis voices
   useEffect(() => {
@@ -189,6 +191,10 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
       if (synthRef.current) {
         synthRef.current.cancel();
       }
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
       if (evalTimeoutRef.current) {
         clearTimeout(evalTimeoutRef.current);
       }
@@ -267,29 +273,33 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
     }
   };
 
-  // Speaks text aloud using Speech Synthesis
-  const speakText = (text: string, overrideVoiceName?: string, overrideRate?: number) => {
-    if (!isMountedRef.current) return;
-    if (isMuted || !synthRef.current) return;
-
-    // Stop previous utterances
-    synthRef.current.cancel();
-
-    // Remove markdown symbols just in case
-    const cleanText = text.replace(/[*_`#\-]/g, " ").trim();
+  // System speech fallback engine with robust gender-matching fix
+  const speakTextSystem = (cleanText: string, overrideVoiceName?: string, overrideRate?: number) => {
+    if (!synthRef.current) return;
 
     const utterance = new SpeechSynthesisUtterance(cleanText);
-    
-    // Dynamic voice config calculation (speed/pitch variation based on tone)
     const baseRate = overrideRate !== undefined ? overrideRate : speechRate;
     const dynamicConfig = calculateDynamicVoiceConfig(cleanText, baseRate, interviewerName);
     
     utterance.rate = dynamicConfig.rate;
     utterance.pitch = dynamicConfig.pitch;
 
-    const voiceName = overrideVoiceName || selectedVoiceName;
+    let voices = availableVoices;
+    if (voices.length === 0) {
+      voices = synthRef.current.getVoices();
+    }
+
+    let voiceName = overrideVoiceName || selectedVoiceName;
+    if (!voiceName || voiceName === "") {
+      const bestVoice = getBestVoiceForPersonality(interviewerName, voices);
+      if (bestVoice) {
+        voiceName = bestVoice.name;
+        setSelectedVoiceName(voiceName);
+      }
+    }
+
     if (voiceName) {
-      const voice = availableVoices.find(v => v.name === voiceName);
+      const voice = voices.find(v => v.name === voiceName);
       if (voice) {
         utterance.voice = voice;
       }
@@ -306,6 +316,72 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
     };
 
     synthRef.current.speak(utterance);
+  };
+
+  // Speaks text aloud using premium ElevenLabs voice or system fallback
+  const speakText = async (text: string, overrideVoiceName?: string, overrideRate?: number) => {
+    if (!isMountedRef.current) return;
+    if (isMuted) return;
+
+    // Stop any current speaking
+    if (synthRef.current) {
+      synthRef.current.cancel();
+    }
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    setIsSpeaking(false);
+
+    const cleanText = text.replace(/[*_`#\-]/g, " ").trim();
+
+    if (useElevenLabs) {
+      try {
+        setIsSpeaking(true);
+        const response = await fetch("/api/tts", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            text: cleanText,
+            personality: interviewerName
+          })
+        });
+
+        if (response.ok) {
+          const blob = await response.blob();
+          const audioUrl = URL.createObjectURL(blob);
+          
+          if (audioRef.current) {
+            audioRef.current.src = audioUrl;
+          } else {
+            audioRef.current = new Audio(audioUrl);
+          }
+
+          audioRef.current.playbackRate = overrideRate !== undefined ? overrideRate : speechRate;
+          
+          audioRef.current.onended = () => {
+            setIsSpeaking(false);
+          };
+          audioRef.current.onerror = () => {
+            setIsSpeaking(false);
+            speakTextSystem(cleanText, overrideVoiceName, overrideRate);
+          };
+
+          await audioRef.current.play();
+          return;
+        } else {
+          // Fall back to system TTS
+          speakTextSystem(cleanText, overrideVoiceName, overrideRate);
+        }
+      } catch (err) {
+        console.error("ElevenLabs TTS failed, playing via system:", err);
+        speakTextSystem(cleanText, overrideVoiceName, overrideRate);
+      }
+    } else {
+      speakTextSystem(cleanText, overrideVoiceName, overrideRate);
+    }
   };
 
   // Toggle microphone listening
@@ -446,7 +522,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   }
 
   return (
-    <div className="min-h-screen bg-[#07080d] text-gray-100 font-sans pb-12 flex flex-col justify-between relative overflow-hidden" id="active-interview-root">
+    <div className="h-screen bg-[#07080d] text-gray-100 font-sans flex flex-col justify-between relative overflow-hidden" id="active-interview-root">
       
       {/* Background radial glows */}
       <div className="absolute top-[-10%] right-[-10%] w-[500px] h-[500px] bg-purple-600/5 rounded-full blur-[140px] pointer-events-none" />
@@ -512,8 +588,14 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
               onClick={() => {
                 const nextMuted = !isMuted;
                 setIsMuted(nextMuted);
-                if (nextMuted && synthRef.current) {
-                  synthRef.current.cancel();
+                if (nextMuted) {
+                  if (synthRef.current) {
+                    synthRef.current.cancel();
+                  }
+                  if (audioRef.current) {
+                    audioRef.current.pause();
+                    audioRef.current.currentTime = 0;
+                  }
                   setIsSpeaking(false);
                 } else if (!nextMuted && currentQuestionText) {
                   speakText(currentQuestionText);
@@ -541,10 +623,10 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
       </header>
 
       {/* Main content grid */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 grid grid-cols-1 lg:grid-cols-3 gap-8 pt-8 relative z-10" id="interview-workspace">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-6 grid grid-cols-1 lg:grid-cols-3 gap-6 py-6 overflow-hidden relative z-10" id="interview-workspace">
         
         {/* Left 2 Cols: Chat Feed & Controls */}
-        <div className="lg:col-span-2 flex flex-col h-[calc(100vh-14rem)] bg-[#0f111a] border border-white/5 rounded-2xl relative overflow-hidden shadow-2xl">
+        <div className="lg:col-span-2 flex flex-col h-full bg-[#0f111a] border border-white/5 rounded-2xl relative overflow-hidden shadow-2xl">
           
           {/* Active Question Bar */}
           <div className="bg-[#141624] border-b border-white/5 p-4 flex items-center justify-between">
@@ -686,9 +768,19 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
 
             {/* Error alerts */}
             {recognitionError && (
-              <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-xs p-3 rounded-xl flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                <span>{recognitionError}</span>
+              <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-xs p-3.5 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-md shadow-red-500/2">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-400" />
+                  <span className="leading-relaxed">{recognitionError}</span>
+                </div>
+                <a 
+                  href={window.location.href} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="bg-red-500/20 hover:bg-red-500/30 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition-all whitespace-nowrap text-center inline-block cursor-pointer border border-red-500/20"
+                >
+                  Open in New Tab
+                </a>
               </div>
             )}
 
@@ -834,7 +926,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
         </div>
 
         {/* Right 1 Col: Assessor Persona & Voice Options */}
-        <div className="lg:col-span-1 space-y-6">
+        <div className="lg:col-span-1 h-full overflow-y-auto pr-1 pb-4 space-y-6 scrollbar-thin">
           
           {/* Persona Card */}
           <div className="bg-[#0f111a] border border-white/5 rounded-2xl p-6 relative overflow-hidden">
@@ -908,11 +1000,47 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
               Voice Synth Controller
             </h3>
 
+            {/* Premium Voice Toggle */}
+            <div className="bg-[#141624] border border-white/5 rounded-xl p-3.5 flex items-center justify-between">
+              <div className="space-y-0.5">
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <Volume2 className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
+                  ElevenLabs Voice AI
+                </span>
+                <p className="text-[10px] text-gray-400 leading-normal">
+                  {useElevenLabs 
+                    ? "Premium hyper-realistic voices active." 
+                    : "Standard web speech synthesis."
+                  }
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const nextVal = !useElevenLabs;
+                  setUseElevenLabs(nextVal);
+                  if (currentQuestionText) speakText(currentQuestionText, undefined, undefined);
+                }}
+                className={`w-11 h-6 rounded-full transition-all duration-300 relative p-1 cursor-pointer flex items-center ${
+                  useElevenLabs ? "bg-purple-600 justify-end" : "bg-white/10 justify-start"
+                }`}
+              >
+                <span className="w-4 h-4 rounded-full bg-white block shadow" />
+              </button>
+            </div>
+
             {/* Voice Select */}
             <div className="space-y-1.5">
-              <label className="block text-[11px] font-bold text-gray-400 uppercase tracking-wider">
-                Select Speech Synthesis Voice
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-[11px] font-bold text-gray-400 uppercase tracking-wider">
+                  Select Speech Synthesis Voice
+                </label>
+                {useElevenLabs && (
+                  <span className="text-[9px] bg-purple-500/10 text-purple-400 border border-purple-500/20 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">
+                    Fallback Active
+                  </span>
+                )}
+              </div>
               
               {availableVoices.length === 0 ? (
                 <span className="text-xs text-gray-500 italic block">
