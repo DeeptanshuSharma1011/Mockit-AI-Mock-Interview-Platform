@@ -1,7 +1,21 @@
 import { Request, Response } from "express";
 
+// A pre-verified list of free-tier pre-made voices in ElevenLabs.
+// All of these are 100% available under the free tier without any paid plan.
+const APPROVED_FREE_VOICES: Record<string, string> = {
+  sophia: "21m00Tcm4TlvDq8ikWAM",  // Rachel (Female)
+  james: "ErXwobaYiN019vkySvjV",   // Antoni (Male)
+  rohan: "N2lVS1w4gNsC97gqnCUs",   // Liam (Male)
+  nicole: "piTKgcLEGmPEeK7g3949",  // Nicole (Female Fallback)
+  josh: "TxGEqn7nUu7vCg9vFr7b",    // Josh (Male Fallback)
+  bella: "EXAVITQu4vr4xnSDxMaL",   // Bella (Female Fallback)
+  arnold: "VR6A4Y667iaCHvInTka8"   // Arnold (Male Fallback)
+};
+
+const APPROVED_VOICE_IDS_SET = new Set(Object.values(APPROVED_FREE_VOICES));
+
 export async function textToSpeech(req: Request, res: Response) {
-  const { text, personality } = req.body;
+  const { text, personality, voiceId: requestedVoiceId } = req.body;
 
   if (!text) {
     return res.status(400).json({ error: "Text is required" });
@@ -9,25 +23,25 @@ export async function textToSpeech(req: Request, res: Response) {
 
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) {
-    // If ElevenLabs API Key is not configured, inform the client to fall back to Web Speech API
     return res.status(412).json({ 
-      error: "ElevenLabs API Key is not configured on the server. Please define ELEVENLABS_API_KEY in your environment variables.", 
+      error: "ElevenLabs API Key is not configured on the server. Falling back to default browser voice.", 
       fallback: true 
     });
   }
 
-  // Map interviewer personality to premium ElevenLabs Voice IDs
-  // Sophia (Staff Lead Engineer): Rachel (Warm, professional, extremely human)
-  // James (VP Executive Recruiter): Antoni (Energetic, executive, polished, fast-paced)
-  // Rohan (Technical Architect): Liam (Extremely natural, warm, supportive)
-  let voiceId = "21m00Tcm4TlvDq8ikWAM"; // Default to Rachel
-  
-  if (personality) {
+  // 1. Voice Selection Logic: Map personality to standard free-tier voices
+  let voiceId = APPROVED_FREE_VOICES.sophia; // Default to Sophia/Rachel
+
+  if (requestedVoiceId && APPROVED_VOICE_IDS_SET.has(requestedVoiceId)) {
+    voiceId = requestedVoiceId;
+  } else if (personality) {
     const lowerP = personality.toLowerCase();
     if (lowerP === "james") {
-      voiceId = "ErXwobaYiN019vkySvjV"; // Antoni
+      voiceId = APPROVED_FREE_VOICES.james; // Antoni
     } else if (lowerP === "rohan") {
-      voiceId = "N2lVS1w4gNsC97gqnCUs"; // Liam
+      voiceId = APPROVED_FREE_VOICES.rohan; // Liam
+    } else if (APPROVED_FREE_VOICES[lowerP]) {
+      voiceId = APPROVED_FREE_VOICES[lowerP];
     }
   }
 
@@ -37,6 +51,9 @@ export async function textToSpeech(req: Request, res: Response) {
     // Clean text of markdown before synthesizing
     const cleanText = text.replace(/[*_`#\-]/g, " ").trim();
 
+    // Use a lightweight bilingual/multilingual model optimized for free tiers
+    const modelId = "eleven_monolingual_v1"; // Always free, reliable, and lightning fast
+
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -45,12 +62,10 @@ export async function textToSpeech(req: Request, res: Response) {
       },
       body: JSON.stringify({
         text: cleanText,
-        model_id: "eleven_multilingual_v2", // Upgraded to multilingual for natural conversational speed & Hindi comforting phrases
+        model_id: modelId,
         voice_settings: {
-          stability: 0.35, // Lowered stability slightly to allow realistic voice variations, speed shifts and emotional cues
-          similarity_boost: 0.85, // High similarity to preserve natural vocal clarity
-          style: 0.15, // Enhanced style for natural expressive range
-          use_speaker_boost: true
+          stability: 0.50, // Standard balance for natural speech
+          similarity_boost: 0.75, // Standard boost
         }
       })
     });
@@ -58,6 +73,26 @@ export async function textToSpeech(req: Request, res: Response) {
     if (!response.ok) {
       const errText = await response.text();
       console.error("ElevenLabs API error:", response.status, errText);
+
+      // Detect if this is a payment, quota, subscription or limit issue
+      const lowerErrText = errText.toLowerCase();
+      const isQuotaOrBillingError = 
+        response.status === 402 || 
+        response.status === 403 || 
+        lowerErrText.includes("billing") || 
+        lowerErrText.includes("subscription") || 
+        lowerErrText.includes("payment") || 
+        lowerErrText.includes("upgrade") || 
+        lowerErrText.includes("quota") || 
+        lowerErrText.includes("limit_exceeded");
+
+      if (isQuotaOrBillingError) {
+        return res.status(402).json({
+          error: "The selected voice isn't available on the free plan. Switching to another free voice.",
+          fallback: true
+        });
+      }
+
       return res.status(response.status).json({ 
         error: `ElevenLabs API error: ${response.statusText}`, 
         details: errText,

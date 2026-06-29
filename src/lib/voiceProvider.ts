@@ -126,6 +126,186 @@ export function getBestVoiceForPersonality(
   return voices[0];
 }
 
+export interface SpeakOptions {
+  personality?: string;
+  rate?: number;
+  pitch?: number;
+  voiceName?: string;
+  gender?: "Male" | "Female";
+  onStart?: () => void;
+  onEnd?: () => void;
+  onError?: (err: Error) => void;
+}
+
+export interface VoiceProvider {
+  id: string;
+  name: string;
+  speak(text: string, options?: SpeakOptions): Promise<void>;
+  cancel(): void;
+  isSupported(): boolean;
+}
+
+export class BrowserSpeechProvider implements VoiceProvider {
+  id = "browser";
+  name = "Default Browser Voice";
+  private synth: SpeechSynthesis | null = null;
+
+  constructor() {
+    if (typeof window !== "undefined") {
+      this.synth = window.speechSynthesis;
+    }
+  }
+
+  isSupported(): boolean {
+    return !!this.synth;
+  }
+
+  speak(text: string, options?: SpeakOptions): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.synth) {
+        return reject(new Error("Browser SpeechSynthesis not supported"));
+      }
+
+      this.cancel();
+
+      // Clean text of markdown before synthesizing
+      const cleanText = text.replace(/[*_`#\-]/g, " ").trim();
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+
+      // Apply options or personality-based configs
+      const personalityName = options?.personality || "Sophia";
+      const baseRate = options?.rate !== undefined ? options.rate : 1.0;
+      const dynamicConfig = calculateDynamicVoiceConfig(cleanText, baseRate, personalityName);
+      
+      utterance.rate = dynamicConfig.rate;
+      utterance.pitch = options?.pitch !== undefined ? options.pitch : dynamicConfig.pitch;
+
+      const voices = this.synth.getVoices();
+      let voiceName = options?.voiceName;
+
+      if (!voiceName) {
+        const bestVoice = getBestVoiceForPersonality(personalityName, voices);
+        if (bestVoice) {
+          voiceName = bestVoice.name;
+        }
+      }
+
+      if (voiceName) {
+        const voice = voices.find(v => v.name === voiceName);
+        if (voice) {
+          utterance.voice = voice;
+        }
+      }
+
+      utterance.onstart = () => {
+        if (options?.onStart) options.onStart();
+      };
+
+      utterance.onend = () => {
+        if (options?.onEnd) options.onEnd();
+        resolve();
+      };
+
+      utterance.onerror = (event: any) => {
+        // Ignore "interrupted" or "canceled" as they are triggered by manual cancellation
+        if (event.error !== "interrupted" && event.error !== "canceled") {
+          const err = new Error(`Browser speech error: ${event.error}`);
+          if (options?.onError) options.onError(err);
+          reject(err);
+        } else {
+          resolve();
+        }
+      };
+
+      this.synth.speak(utterance);
+    });
+  }
+
+  cancel(): void {
+    if (this.synth) {
+      this.synth.cancel();
+    }
+  }
+}
+
+export class ElevenLabsFreeProvider implements VoiceProvider {
+  id = "elevenlabs";
+  name = "ElevenLabs (Free Tier)";
+  private currentAudio: HTMLAudioElement | null = null;
+
+  isSupported(): boolean {
+    return true; // Proxy backend is always available
+  }
+
+  speak(text: string, options?: SpeakOptions): Promise<void> {
+    return new Promise(async (resolve, reject) => {
+      this.cancel();
+
+      const cleanText = text.replace(/[*_`#\-]/g, " ").trim();
+      const personality = options?.personality || "Sophia";
+
+      try {
+        if (options?.onStart) options.onStart();
+
+        const response = await fetch("/api/tts", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            text: cleanText,
+            personality: personality
+          })
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          const errMsg = errData.error || `ElevenLabs synthesis failed with status ${response.status}.`;
+          const err = new Error(errMsg);
+          
+          if (options?.onError) options.onError(err);
+          reject(err);
+          return;
+        }
+
+        const blob = await response.blob();
+        const audioUrl = URL.createObjectURL(blob);
+        
+        const audio = new Audio(audioUrl);
+        this.currentAudio = audio;
+
+        if (options?.rate !== undefined) {
+          audio.playbackRate = options.rate;
+        }
+
+        audio.onended = () => {
+          if (options?.onEnd) options.onEnd();
+          resolve();
+        };
+
+        audio.onerror = () => {
+          const err = new Error("Failed to play synthesized audio. Check speaker settings or browser audio permission.");
+          if (options?.onError) options.onError(err);
+          reject(err);
+        };
+
+        await audio.play();
+      } catch (err: any) {
+        if (options?.onError) options.onError(err);
+        reject(err);
+      }
+    });
+  }
+
+  cancel(): void {
+    if (this.currentAudio) {
+      this.currentAudio.pause();
+      this.currentAudio.currentTime = 0;
+      this.currentAudio = null;
+    }
+  }
+}
+
 /**
  * Computes dynamic speaking settings (rate & pitch variations) for human voice behaviour.
  */

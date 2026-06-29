@@ -87,6 +87,8 @@ export interface InterviewSessionMemory {
     behaviour: number;
     confidenceLossDetected: boolean;
   }>;
+  voiceProvider?: string;
+  voiceName?: string;
 }
 
 export const activeSessions = new Map<string, InterviewSessionMemory>();
@@ -140,6 +142,8 @@ export async function startInterview(req: AuthenticatedRequest, res: Response) {
       ? "Sophia is a thorough, empathetic lead engineer who focuses deeply on clean design, trade-offs, scalability, and code hygiene."
       : "James is a crisp, direct VP Recruiter who has an objective, fast-paced assessment style, emphasizing real-world commercial impact and the STAR method.";
 
+    const { voiceProvider, voiceName } = req.body || {};
+
     // Initialize temporary memory store
     const sessionState: InterviewSessionMemory = {
       interviewId,
@@ -154,6 +158,8 @@ export async function startInterview(req: AuthenticatedRequest, res: Response) {
       history: [],
       scores: [],
       answerScores: [],
+      voiceProvider,
+      voiceName,
     };
 
     // Use Gemini to generate the initial greeting and the first interview question

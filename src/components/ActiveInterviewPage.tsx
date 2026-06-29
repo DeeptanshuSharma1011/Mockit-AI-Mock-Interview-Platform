@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import { 
   Brain, 
   Mic, 
@@ -31,7 +31,10 @@ import { Page } from "../types";
 import { 
   getBestVoiceForPersonality, 
   calculateDynamicVoiceConfig, 
-  INTERVIEWER_PERSONALITIES 
+  INTERVIEWER_PERSONALITIES,
+  BrowserSpeechProvider,
+  ElevenLabsFreeProvider,
+  VoiceProvider
 } from "../lib/voiceProvider";
 
 interface ActiveInterviewPageProps {
@@ -90,7 +93,12 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   const isMountedRef = useRef(true);
   const evalTimeoutRef = useRef<any>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const [useElevenLabs, setUseElevenLabs] = useState(true);
+  const [voiceProvider, setVoiceProvider] = useState<"browser" | "elevenlabs">("browser");
+  const useElevenLabs = voiceProvider === "elevenlabs";
+  const setUseElevenLabs = (val: boolean) => setVoiceProvider(val ? "elevenlabs" : "browser");
+
+  const browserProvider = useMemo(() => new BrowserSpeechProvider(), []);
+  const elevenLabsProvider = useMemo(() => new ElevenLabsFreeProvider(), []);
 
   // Lobby and Pre-flight state variables
   const [isLobby, setIsLobby] = useState(true);
@@ -319,28 +327,13 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
       : "Hello! I am James, your executive assessor. Your system is fully verified, and I am ready to begin when you are.";
       
     try {
-      const response = await fetch("/api/tts", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          text: sampleText,
-          personality: interviewerName
-        })
-      });
-      
-      if (response.ok) {
-        const blob = await response.blob();
-        const audioUrl = URL.createObjectURL(blob);
-        if (audioRef.current) {
-          audioRef.current.src = audioUrl;
-          await audioRef.current.play();
+      await elevenLabsProvider.speak(sampleText, {
+        personality: interviewerName,
+        rate: speechRate,
+        onError: (err) => {
+          throw err;
         }
-      } else {
-        const errData = await response.json();
-        throw new Error(errData.error || "ElevenLabs synthesis failed.");
-      }
+      });
     } catch (err: any) {
       console.error("Lobby voice test error:", err);
       setElevenLabsError(err.message || "Failed to contact ElevenLabs voice service. Double check your ELEVENLABS_API_KEY.");
@@ -391,7 +384,11 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`
-        }
+        },
+        body: JSON.stringify({
+          voiceProvider: voiceProvider,
+          voiceName: voiceProvider === "elevenlabs" ? interviewerName : selectedVoiceName
+        })
       });
       const data = await response.json();
        if (!response.ok) {
@@ -418,8 +415,8 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
       }
       
       const bestVoice = getBestVoiceForPersonality(data.interviewerName, currentVoices);
-      const voiceToUse = bestVoice ? bestVoice.name : selectedVoiceName;
-      if (bestVoice) {
+      const voiceToUse = selectedVoiceName || (bestVoice ? bestVoice.name : "");
+      if (bestVoice && !selectedVoiceName) {
         setSelectedVoiceName(bestVoice.name);
       }
 
@@ -434,120 +431,66 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
     }
   };
 
-  // System speech fallback engine with robust gender-matching fix
-  const speakTextSystem = (cleanText: string, overrideVoiceName?: string, overrideRate?: number) => {
-    if (!synthRef.current) return;
-
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    const baseRate = overrideRate !== undefined ? overrideRate : speechRate;
-    const dynamicConfig = calculateDynamicVoiceConfig(cleanText, baseRate, interviewerName);
-    
-    utterance.rate = dynamicConfig.rate;
-    utterance.pitch = dynamicConfig.pitch;
-
-    let voices = availableVoices;
-    if (voices.length === 0) {
-      voices = synthRef.current.getVoices();
-    }
-
-    let voiceName = overrideVoiceName || selectedVoiceName;
-    if (!voiceName || voiceName === "") {
-      const bestVoice = getBestVoiceForPersonality(interviewerName, voices);
-      if (bestVoice) {
-        voiceName = bestVoice.name;
-        setSelectedVoiceName(voiceName);
-      }
-    }
-
-    if (voiceName) {
-      const voice = voices.find(v => v.name === voiceName);
-      if (voice) {
-        utterance.voice = voice;
-      }
-    }
-
-    utterance.onstart = () => {
-      setIsSpeaking(true);
-    };
-    utterance.onend = () => {
-      setIsSpeaking(false);
-    };
-    utterance.onerror = () => {
-      setIsSpeaking(false);
-    };
-
-    synthRef.current.speak(utterance);
-  };
-
-  // Speaks text aloud using premium ElevenLabs voice or system fallback
+  // Speaks text aloud using our modular provider architecture (Browser / ElevenLabs with automatic fallback)
   const speakText = async (text: string, overrideVoiceName?: string, overrideRate?: number, overridePersonality?: string) => {
     if (!isMountedRef.current) return;
     if (isMuted) return;
 
-    // Stop any current speaking
-    if (synthRef.current) {
-      synthRef.current.cancel();
-    }
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-    }
+    // Stop any current speaking in both providers
+    browserProvider.cancel();
+    elevenLabsProvider.cancel();
     setIsSpeaking(false);
     setElevenLabsError(null);
 
-    const cleanText = text.replace(/[*_`#\-]/g, " ").trim();
     const activeInterviewer = overridePersonality || interviewerName;
 
-    if (useElevenLabs) {
-      try {
-        setIsSpeaking(true);
-        const response = await fetch("/api/tts", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            text: cleanText,
-            personality: activeInterviewer
-          })
-        });
+    try {
+      setIsSpeaking(true);
+      const providerToUse = voiceProvider === "elevenlabs" ? elevenLabsProvider : browserProvider;
 
-        if (response.ok) {
-          const blob = await response.blob();
-          const audioUrl = URL.createObjectURL(blob);
-          
-          if (audioRef.current) {
-            audioRef.current.src = audioUrl;
-          } else {
-            audioRef.current = new Audio(audioUrl);
-          }
-
-          audioRef.current.playbackRate = overrideRate !== undefined ? overrideRate : speechRate;
-          
-          audioRef.current.onended = () => {
-            setIsSpeaking(false);
-          };
-          audioRef.current.onerror = () => {
-            setIsSpeaking(false);
-            setElevenLabsError("Failed to play synthesized audio. Check speaker settings or browser audio permission.");
-          };
-
-          await audioRef.current.play();
-          return;
-        } else {
-          // Status error from backend (e.g. 412 API Key missing)
-          const errData = await response.json().catch(() => ({}));
-          const errMsg = errData.error || `Voice generation failed with status ${response.status}.`;
-          setElevenLabsError(errMsg);
+      await providerToUse.speak(text, {
+        personality: activeInterviewer,
+        rate: overrideRate !== undefined ? overrideRate : speechRate,
+        voiceName: overrideVoiceName || selectedVoiceName,
+        onStart: () => {
+          setIsSpeaking(true);
+        },
+        onEnd: () => {
           setIsSpeaking(false);
+        },
+        onError: async (err) => {
+          console.error("Speech synthesis error in active provider:", providerToUse.id, err);
+          setIsSpeaking(false);
+
+          if (providerToUse.id === "elevenlabs") {
+            const friendlyMsg = "The selected voice isn't available on the free plan. Switching to another free voice.";
+            setElevenLabsError(friendlyMsg);
+            
+            // Automatically fall back to Browser speech synthesis
+            setVoiceProvider("browser");
+            
+            try {
+              setIsSpeaking(true);
+              await browserProvider.speak(text, {
+                personality: activeInterviewer,
+                rate: overrideRate !== undefined ? overrideRate : speechRate,
+                voiceName: selectedVoiceName,
+                onStart: () => setIsSpeaking(true),
+                onEnd: () => setIsSpeaking(false),
+                onError: () => setIsSpeaking(false)
+              });
+            } catch (fallbackErr) {
+              console.error("Browser fallback speech synthesis also failed:", fallbackErr);
+              setIsSpeaking(false);
+            }
+          } else {
+            setElevenLabsError(err.message || "Speech synthesis failed.");
+          }
         }
-      } catch (err: any) {
-        console.error("ElevenLabs TTS failed:", err);
-        setElevenLabsError("Connection error to ElevenLabs proxy server. Please ensure the backend is running properly.");
-        setIsSpeaking(false);
-      }
-    } else {
-      speakTextSystem(cleanText, overrideVoiceName, overrideRate);
+      });
+    } catch (err: any) {
+      console.error("speakText failed completely:", err);
+      setIsSpeaking(false);
     }
   };
 
@@ -870,32 +813,46 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                     </h3>
                   </div>
 
-                  {/* ElevenLabs premium switch */}
-                  <div className="bg-[#07080d] border border-white/5 rounded-xl p-3.5 flex items-center justify-between">
-                    <div className="space-y-0.5 max-w-[80%]">
-                      <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                        <Volume2 className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
-                        ElevenLabs Voice AI (Premium)
-                      </span>
-                      <p className="text-[10px] text-gray-400 leading-relaxed">
-                        Uses advanced expressive conversational models with real-world emotional range. Highly recommended.
-                      </p>
-                    </div>
+                  {/* Provider Grid Selector */}
+                  <div className="grid grid-cols-2 gap-3">
                     <button
                       type="button"
                       onClick={() => {
-                        setUseElevenLabs(prev => !prev);
+                        setVoiceProvider("browser");
                         setElevenLabsError(null);
                       }}
-                      className={`w-11 h-6 rounded-full transition-all duration-300 relative p-1 cursor-pointer flex items-center ${
-                        useElevenLabs ? "bg-purple-600 justify-end" : "bg-white/10 justify-start"
+                      className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                        voiceProvider === "browser"
+                          ? "bg-purple-500/10 border-purple-500 text-white animate-pulse-subtle"
+                          : "bg-[#07080d] border-white/5 text-gray-400 hover:border-white/10"
                       }`}
                     >
-                      <span className="w-4 h-4 rounded-full bg-white block shadow" />
+                      <span className="text-xs font-extrabold block mb-1">Browser Voice (Free)</span>
+                      <span className="text-[9px] text-gray-400 block leading-tight">
+                        Uses standard browser SpeechSynthesis. Always available, zero-config.
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setVoiceProvider("elevenlabs");
+                        setElevenLabsError(null);
+                      }}
+                      className={`p-4 rounded-xl border text-left transition-all cursor-pointer ${
+                        voiceProvider === "elevenlabs"
+                          ? "bg-purple-500/10 border-purple-500 text-white animate-pulse-subtle"
+                          : "bg-[#07080d] border-white/5 text-gray-400 hover:border-white/10"
+                      }`}
+                    >
+                      <span className="text-xs font-extrabold block mb-1">ElevenLabs (Free Tier)</span>
+                      <span className="text-[9px] text-gray-400 block leading-tight">
+                        Ultra-realistic AI voice synthesis using pre-made free tier voices.
+                      </span>
                     </button>
                   </div>
 
-                  {/* Test Voice Button */}
+                  {/* Test Voice Button & Errors for ElevenLabs */}
                   {useElevenLabs && (
                     <div className="space-y-3.5">
                       <button
@@ -907,7 +864,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                         {testingVoiceSynth ? (
                           <>
                             <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
-                            Synthesizing expressive test...
+                            Synthesizing free test...
                           </>
                         ) : (
                           <>
@@ -935,12 +892,12 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                           <button
                             type="button"
                             onClick={() => {
-                              setUseElevenLabs(false);
+                              setVoiceProvider("browser");
                               setElevenLabsError(null);
                             }}
                             className="px-3 py-1.5 bg-red-500/15 hover:bg-red-500/25 text-white rounded-lg text-[9px] font-bold border border-red-500/25 cursor-pointer transition-colors"
                           >
-                            Switch to System Fallback Voice
+                            Switch to Default Browser Voice
                           </button>
                         </div>
                       )}
