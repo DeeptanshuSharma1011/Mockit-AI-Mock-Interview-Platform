@@ -788,9 +788,25 @@ export async function transcribeAudio(req: AuthenticatedRequest, res: Response) 
     return res.status(400).json({ error: "Audio data is required" });
   }
 
+  // Log: received MIME Type and Base64 metadata
   const cleanMimeType = mimeType || "audio/webm";
-  const sizeInBytes = Math.round((audio.length * 3) / 4);
-  console.log(`[STT Backend] Audio received: size=${sizeInBytes} bytes, mimeType=${cleanMimeType}`);
+  console.log(`[STT Backend] received MIME type: ${cleanMimeType}`);
+  console.log(`[STT Backend] MIME type sent to Gemini: ${cleanMimeType}`);
+  console.log(`[STT Backend] Base64 original length: ${audio.length} characters`);
+  console.log(`[STT Backend] First 50 characters of received payload: ${audio.substring(0, 50)}`);
+
+  // Strip Data URL scheme prefix if present (e.g., "data:audio/webm;base64,")
+  let processedAudio = audio;
+  if (processedAudio.startsWith("data:")) {
+    console.log("[STT Backend] Base64 begins with 'data:', removing the Data URL prefix...");
+    const commaIndex = processedAudio.indexOf(",");
+    if (commaIndex !== -1) {
+      processedAudio = processedAudio.substring(commaIndex + 1);
+      console.log(`[STT Backend] Clean Base64 length: ${processedAudio.length} characters`);
+      console.log(`[STT Backend] Clean Base64 first 50 characters: ${processedAudio.substring(0, 50)}`);
+    }
+  }
+
   console.log(`[STT Backend] Transcription started...`);
 
   try {
@@ -800,28 +816,55 @@ export async function transcribeAudio(req: AuthenticatedRequest, res: Response) 
     const audioPart = {
       inlineData: {
         mimeType: cleanMimeType,
-        data: audio,
+        data: processedAudio,
       }
     };
 
-    // Ask Gemini to transcribe the audio content
+    const textPrompt = "Please transcribe this audio exactly as spoken. Do not add any extra text, corrections, pleasantries, commentary, or notes. If there is no audible speech or only ambient noise, return an empty string.";
+
+    // Log the payload structure (excluding full audio)
+    console.log("[STT Backend] Prepared Gemini API request payload structure:");
+    console.log(JSON.stringify({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          inlineData: {
+            mimeType: audioPart.inlineData.mimeType,
+            data_length: audioPart.inlineData.data.length,
+            data_prefix_50: audioPart.inlineData.data.substring(0, 50),
+          }
+        },
+        textPrompt
+      ]
+    }, null, 2));
+
+    // Ask Gemini to transcribe the audio content using the correct officially supported model
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: [
         audioPart,
-        { text: "Please transcribe this audio exactly as spoken. Do not add any extra text, corrections, pleasantries, commentary, or notes. If there is no audible speech or only ambient noise, return an empty string." }
+        textPrompt
       ]
     });
+
+    // Log the raw response and verify transcript extraction
+    console.log("[STT Backend] Raw Gemini Response:", JSON.stringify(response, null, 2));
 
     const transcript = response.text?.trim() || "";
     console.log(`[STT Backend] Transcription completed successfully. Transcript length=${transcript.length}, content="${transcript}"`);
     
     return res.json({ transcript });
   } catch (err: any) {
-    console.error("[STT Backend] Transcription error occurred:", err);
+    console.error("[STT Backend] Transcription error occurred!");
+    console.error(`- HTTP status: ${err.status || err.statusCode || "N/A"}`);
+    console.error(`- SDK/Provider error message: ${err.message || "N/A"}`);
+    console.error(`- Error details / Response body: ${JSON.stringify(err.response || err.details || err, null, 2)}`);
+    console.error(`- Stack trace:\n${err.stack || "N/A"}`);
+    
     return res.status(500).json({ 
       error: "Transcription service failed.", 
-      details: err.message || "Unknown error" 
+      details: err.message || "Unknown error",
+      stack: process.env.NODE_ENV !== "production" ? err.stack : undefined
     });
   }
 }
