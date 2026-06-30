@@ -2,7 +2,7 @@ import { Router } from "express";
 import { signup, login, getUserProfile } from "../controllers/authController";
 import { updateUserAnalytics } from "../controllers/analyticsController";
 import { getDashboardData, createInterviewSetup, completeInterview, getInterviewDetails } from "../controllers/interviewController";
-import { startInterview, submitAnswer, concludeInterviewEarly } from "../controllers/aiInterviewController";
+import { startInterview, submitAnswer, concludeInterviewEarly, transcribeAudio } from "../controllers/aiInterviewController";
 import { textToSpeech } from "../controllers/ttsController";
 import { authenticateToken } from "../middleware/auth";
 
@@ -26,6 +26,7 @@ router.post("/interviews/:id/complete", authenticateToken as any, completeInterv
 router.post("/interviews/:id/start", authenticateToken as any, startInterview as any);
 router.post("/interviews/:id/answer", authenticateToken as any, submitAnswer as any);
 router.post("/interviews/:id/abort", authenticateToken as any, concludeInterviewEarly as any);
+router.post("/transcribe", authenticateToken as any, transcribeAudio as any);
 
 // Text to Speech Proxy (ElevenLabs with browser fallback)
 router.get("/tts/status", (req, res) => {

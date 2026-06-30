@@ -77,10 +77,11 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   const [selectedVoiceName, setSelectedVoiceName] = useState<string>("");
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   
-  // Microphone Speech Recognition states
+  // Microphone Speech Recording states (Production STT via backend)
   const [isListening, setIsListening] = useState(false);
   const [userInput, setUserInput] = useState("");
   const [recognitionError, setRecognitionError] = useState<string | null>(null);
+  const [isTranscribing, setIsTranscribing] = useState(false);
 
   // Transition & Evaluation states
   const [isEvaluating, setIsEvaluating] = useState(false);
@@ -89,7 +90,9 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
 
   // Refs for audio / speech synthesis
   const synthRef = useRef<SpeechSynthesis | null>(null);
-  const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<any>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const startTimeRef = useRef<number>(0);
   const historyEndRef = useRef<HTMLDivElement>(null);
   const isMountedRef = useRef(true);
   const evalTimeoutRef = useRef<any>(null);
@@ -316,76 +319,144 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
     }
   }, [micStream]);
 
-  // Speech recognition setup
-  useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    console.log("🎙️ [Speech Recognition] Browser Support Check:", SpeechRecognition ? "SUPPORTED" : "UNSUPPORTED");
-    if (typeof navigator !== "undefined") {
-      console.log("🎙️ [Speech Recognition] Browser Language:", navigator.language || "unknown");
+  // Helper to convert Blob to Base64
+  const blobToBase64 = (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64data = reader.result as string;
+        // Strip the Data URL scheme prefix (e.g., "data:audio/webm;base64,")
+        const base64 = base64data.split(",")[1];
+        resolve(base64);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  };
+
+  // Upload and request transcription from backend
+  const handleAudioUploadAndTranscription = async (audioBlob: Blob, mimeType: string) => {
+    setIsTranscribing(true);
+    console.log("🎙️ [Frontend] Transcription initiated. Uploading audio blob...", {
+      size: audioBlob.size,
+      mimeType: mimeType
+    });
+
+    try {
+      const base64Audio = await blobToBase64(audioBlob);
+      console.log("🎙️ [Frontend] Audio base64 conversion completed successfully. Size in chars:", base64Audio.length);
+      console.log("🎙️ [Frontend] Sending transcription POST request to /api/transcribe...");
+
+      const response = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          audio: base64Audio,
+          mimeType: mimeType
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to transcribe audio.");
+      }
+
+      console.log("🎙️ [Frontend] Transcription SUCCESS. Transcript received:", data.transcript);
+
+      if (data.transcript && data.transcript.trim()) {
+        setUserInput(prev => {
+          const separator = prev.trim() ? " " : "";
+          return prev + separator + data.transcript.trim();
+        });
+      } else {
+        console.log("🎙️ [Frontend] Received empty transcript (no speech detected).");
+      }
+
+    } catch (err: any) {
+      console.error("🎙️ [Frontend] Transcription upload or processing failed:", err);
+      setRecognitionError(`Speech-to-Text translation failed: ${err.message || err}. Please type your answer manually or try recording again.`);
+    } finally {
+      setIsTranscribing(false);
     }
+  };
 
-    if (SpeechRecognition) {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = "en-US";
+  // Start recording audio
+  const startRecording = async () => {
+    console.log("🎙️ [Microphone] Attempting to start recording...");
+    audioChunksRef.current = [];
+    setRecognitionError(null);
 
-      recognition.onstart = () => {
-        console.log("🎙️ [Speech Recognition] onstart Event: Active listening started.");
+    try {
+      let stream = micStream;
+      if (!stream) {
+        console.log("🎙️ [Microphone] Stream not active, requesting getUserMedia...");
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        console.log("🎙️ [Microphone] Microphone permission granted.");
+        setMicStream(stream);
+        setMicPermission("granted");
+      }
+
+      console.log("🎙️ [Microphone] MediaRecorder initialization starting...");
+      
+      let options = {};
+      if (MediaRecorder.isTypeSupported("audio/webm")) {
+        options = { mimeType: "audio/webm" };
+      } else if (MediaRecorder.isTypeSupported("audio/ogg")) {
+        options = { mimeType: "audio/ogg" };
+      } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
+        options = { mimeType: "audio/mp4" };
+      }
+
+      const mediaRecorder = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstart = () => {
+        startTimeRef.current = Date.now();
         setIsListening(true);
-        setRecognitionError(null);
+        console.log("🎙️ [Microphone] Recording started successfully. MimeType:", mediaRecorder.mimeType);
       };
 
-      recognition.onresult = (event: any) => {
-        let interimTranscript = "";
-        let finalTranscript = "";
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript;
-          } else {
-            interimTranscript += event.results[i][0].transcript;
-          }
-        }
-
-        if (finalTranscript) {
-          console.log(`🎙️ [Speech Recognition] onresult Event: Final Segment parsed: "${finalTranscript}"`);
-          setUserInput(prev => {
-            const separator = prev.trim() ? " " : "";
-            return prev + separator + finalTranscript;
-          });
-        }
-      };
-
-      recognition.onerror = (event: any) => {
-        console.error("🎙️ [Speech Recognition] onerror Event:", event.error);
-        if (event.error === "not-allowed") {
-          setRecognitionError("Microphone permission denied. Please allow mic access in your browser or type manually.");
-        } else if (event.error === "no-speech") {
-          // Ignore transient no-speech triggers
-        } else if (event.error === "network") {
-          setRecognitionError("Speech recognition network error: Google Chrome's speech service has restriction policies inside preview frames. Please open the application in a new tab using the top-right button, or type your response manually below.");
-        } else {
-          setRecognitionError(`Microphone error: ${event.error}. Please type if issue persists.`);
-        }
+      mediaRecorder.onstop = async () => {
+        const durationMs = Date.now() - startTimeRef.current;
         setIsListening(false);
+        console.log(`🎙️ [Microphone] Recording stopped. Duration: ${(durationMs / 1000).toFixed(2)}s`);
+
+        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType });
+        console.log(`🎙️ [Microphone] Audio blob compiled. Size: ${audioBlob.size} bytes`);
+
+        if (audioBlob.size < 500) {
+          console.warn("🎙️ [Microphone] Audio is too short or empty, skipping transcription.");
+          return;
+        }
+
+        await handleAudioUploadAndTranscription(audioBlob, mediaRecorder.mimeType);
       };
 
-      recognition.onend = () => {
-        console.log("🎙️ [Speech Recognition] onend Event: Active listening ended.");
-        setIsListening(false);
-      };
+      // Start recording and collect chunks
+      mediaRecorder.start(250);
 
-      recognitionRef.current = recognition;
-    } else {
-      console.warn("🎙️ [Speech Recognition] Browser does not support Web Speech API SpeechRecognition.");
-      setRecognitionError("Your browser does not support Speech Recognition. Please type your responses manually below.");
+    } catch (err: any) {
+      console.error("🎙️ [Microphone] Failed to start recording:", err);
+      setRecognitionError(`Failed to access microphone or start recording: ${err.message || err}`);
     }
+  };
 
+  // Clean up any recording on teardown
+  useEffect(() => {
     return () => {
-      if (recognitionRef.current) {
-        console.log("🎙️ [Speech Recognition] Aborting active recognition on teardown.");
-        recognitionRef.current.abort();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        console.log("🎙️ [Microphone] Teardown: Stopping active recording...");
+        mediaRecorderRef.current.stop();
       }
     };
   }, []);
@@ -665,24 +736,16 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
 
   // Toggle microphone listening
   const toggleListening = () => {
-    console.log("🎙️ [Speech Recognition] Toggle clicked. Current state (isListening):", isListening);
-    if (!recognitionRef.current) {
-      console.warn("🎙️ [Speech Recognition] Cannot toggle listening: recognitionRef.current is not initialized.");
-      setRecognitionError("Speech-to-text is not supported or was not initialized in this browser.");
-      return;
-    }
-
+    console.log("🎙️ [Microphone] Toggle clicked. Current state (isListening):", isListening);
     if (isListening) {
-      console.log("🎙️ [Speech Recognition] Stopping active listening session...");
-      recognitionRef.current.stop();
-    } else {
-      setRecognitionError(null);
-      try {
-        console.log("🎙️ [Speech Recognition] Starting active listening session...");
-        recognitionRef.current.start();
-      } catch (err) {
-        console.error("🎙️ [Speech Recognition] EXCEPTION during recognitionRef.start():", err);
+      console.log("🎙️ [Microphone] Stopping active listening session...");
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      } else {
+        setIsListening(false);
       }
+    } else {
+      startRecording();
     }
   };
 
@@ -695,8 +758,8 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
     setUserInput("");
     
     // Stop recording if active
-    if (isListening && recognitionRef.current) {
-      recognitionRef.current.stop();
+    if (isListening && mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
     }
 
     // Stop speaking
@@ -920,27 +983,19 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                   )}
                 </div>
 
-                {/* Google Chrome embed limitation alert banner */}
-                <div className="bg-amber-500/5 border border-amber-500/15 p-4 rounded-xl space-y-2.5">
-                  <div className="flex items-start gap-2.5 text-amber-400">
+                {/* Google AI Studio Preview & Production STT upgrade information */}
+                <div className="bg-purple-500/5 border border-purple-500/15 p-4 rounded-xl space-y-2.5">
+                  <div className="flex items-start gap-2.5 text-purple-400">
                     <ShieldAlert className="w-4 h-4 flex-shrink-0 mt-0.5" />
                     <div className="space-y-1">
-                      <p className="text-xs font-bold">Google Chrome Iframe Restrictions</p>
+                      <p className="text-xs font-bold">Secure Server-Side AI Speech Transcription</p>
                       <p className="text-[11px] text-gray-400 leading-relaxed">
-                        If you are viewing this app inside the Google AI Studio preview window, Chrome security policy blocks the network-based Web Speech API. For full hands-free voice control, please open this app in a separate browser tab.
+                        Mockit has been upgraded to a production-grade Speech-to-Text architecture. Audio is recorded and transcribed directly using our secure server-side AI engine. The microphone will now work flawlessly inside both the Google AI Studio preview window and Render production HTTPS environments!
                       </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 pt-1 border-t border-white/5">
-                    <a 
-                      href={window.location.href} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="px-3.5 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-white rounded-lg text-[10px] font-bold transition-all border border-amber-500/20 inline-flex items-center gap-1 cursor-pointer"
-                    >
-                      Open in New Tab
-                    </a>
-                    <span className="text-[10px] text-gray-500">or proceed inside the frame and use manual keyboard typing as a fallback.</span>
+                    <span className="text-[10px] text-gray-500">Enjoy premium, zero-config hands-free voice controls. Manual keyboard entry is always available as a fallback.</span>
                   </div>
                 </div>
               </div>
@@ -1512,15 +1567,19 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                   {/* 3. Primary Microphone Toggle Button (Large in center) */}
                   <button
                     onClick={toggleListening}
-                    disabled={isCompleted}
+                    disabled={isCompleted || isTranscribing}
                     className={`w-14 h-14 rounded-full flex items-center justify-center border shadow-xl transition-all duration-300 cursor-pointer disabled:opacity-50 ${
-                      isListening
+                      isTranscribing
+                        ? "bg-indigo-600 border-indigo-500 text-white animate-pulse"
+                        : isListening
                         ? "bg-red-500 border-red-600 text-white scale-105 shadow-red-500/20 hover:bg-red-600 animate-pulse"
                         : "bg-purple-600 border-purple-500 text-white hover:bg-purple-500 hover:scale-105 shadow-purple-600/10"
                     }`}
-                    title={isListening ? "Pause Voice Capture" : "Activate Microphone"}
+                    title={isTranscribing ? "Transcribing voice..." : isListening ? "Stop Voice Capture" : "Activate Microphone"}
                   >
-                    {isListening ? (
+                    {isTranscribing ? (
+                      <Loader2 className="w-5.5 h-5.5 animate-spin" />
+                    ) : isListening ? (
                       <MicOff className="w-5.5 h-5.5" />
                     ) : (
                       <Mic className="w-5.5 h-5.5" />
@@ -1705,15 +1764,15 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                 </div>
               </div>
 
-              {/* Speech Recognition Diagnostics */}
+              {/* Speech-to-Text Diagnostics */}
               <div className="space-y-2">
                 <p className="text-[10px] text-teal-400 font-extrabold uppercase tracking-wide">
-                  Speech Recognition
+                  Speech-to-Text Pipeline
                 </p>
                 <div className="grid grid-cols-2 gap-y-1 text-[11px] bg-white/5 p-2.5 rounded-xl border border-white/5 font-mono">
-                  <span className="text-gray-500">Browser Supported:</span>
+                  <span className="text-gray-500">STT Engine:</span>
                   <span className="text-right text-white">
-                    {!!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) ? "Yes (✓)" : "No (✗)"}
+                    Gemini Multimodal (✓)
                   </span>
 
                   <span className="text-gray-500">Secure Context:</span>
@@ -1721,20 +1780,20 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                     {window.isSecureContext ? "Yes (✓)" : "No (✗)"}
                   </span>
 
-                  <span className="text-gray-500">Inside Preview Frame:</span>
-                  <span className={`text-right font-bold ${isInPreviewFrame ? "text-amber-400 animate-pulse" : "text-emerald-400"}`}>
-                    {isInPreviewFrame ? "Yes (restricted)" : "No (direct)"}
-                  </span>
-
                   <span className="text-gray-500">Mic Permission:</span>
                   <span className="text-right text-white">{micPermission}</span>
 
-                  <span className="text-gray-500">Listener State:</span>
+                  <span className="text-gray-500">MediaRecorder:</span>
                   <span className={`text-right font-bold ${isListening ? "text-teal-400 animate-pulse" : "text-gray-500"}`}>
-                    {isListening ? "Listening" : "Idle"}
+                    {isListening ? "Recording" : "Idle"}
                   </span>
 
-                  <span className="text-gray-500">Last Rec Error:</span>
+                  <span className="text-gray-500">Transcribing:</span>
+                  <span className={`text-right font-bold ${isTranscribing ? "text-amber-400 animate-pulse" : "text-gray-500"}`}>
+                    {isTranscribing ? "In Progress" : "No"}
+                  </span>
+
+                  <span className="text-gray-500">Last Error:</span>
                   <span className="text-right text-red-400 truncate" title={recognitionError || "None"}>
                     {recognitionError || "None"}
                   </span>

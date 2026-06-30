@@ -772,3 +772,56 @@ You MUST respond strictly with a valid JSON matching the schema.`;
     };
   }
 }
+
+/**
+ * Speech-to-Text Transcription using Gemini multimodal audio capability
+ */
+export async function transcribeAudio(req: AuthenticatedRequest, res: Response) {
+  if (!req.user) {
+    return res.status(401).json({ error: "Unauthenticated request" });
+  }
+
+  const { audio, mimeType } = req.body;
+
+  if (!audio) {
+    console.error("[STT Backend] No audio payload received.");
+    return res.status(400).json({ error: "Audio data is required" });
+  }
+
+  const cleanMimeType = mimeType || "audio/webm";
+  const sizeInBytes = Math.round((audio.length * 3) / 4);
+  console.log(`[STT Backend] Audio received: size=${sizeInBytes} bytes, mimeType=${cleanMimeType}`);
+  console.log(`[STT Backend] Transcription started...`);
+
+  try {
+    const ai = getGeminiClient();
+    
+    // Prepare the audio part for Gemini
+    const audioPart = {
+      inlineData: {
+        mimeType: cleanMimeType,
+        data: audio,
+      }
+    };
+
+    // Ask Gemini to transcribe the audio content
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: [
+        audioPart,
+        { text: "Please transcribe this audio exactly as spoken. Do not add any extra text, corrections, pleasantries, commentary, or notes. If there is no audible speech or only ambient noise, return an empty string." }
+      ]
+    });
+
+    const transcript = response.text?.trim() || "";
+    console.log(`[STT Backend] Transcription completed successfully. Transcript length=${transcript.length}, content="${transcript}"`);
+    
+    return res.json({ transcript });
+  } catch (err: any) {
+    console.error("[STT Backend] Transcription error occurred:", err);
+    return res.status(500).json({ 
+      error: "Transcription service failed.", 
+      details: err.message || "Unknown error" 
+    });
+  }
+}
