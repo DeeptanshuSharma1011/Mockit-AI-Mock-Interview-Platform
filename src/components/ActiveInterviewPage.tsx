@@ -93,12 +93,25 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   const isMountedRef = useRef(true);
   const evalTimeoutRef = useRef<any>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const [voiceProvider, setVoiceProvider] = useState<"browser" | "elevenlabs">("elevenlabs");
+  const [voiceProvider, setVoiceProvider] = useState<"browser" | "elevenlabs" >(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("mockit_voice_provider");
+      if (saved === "browser" || saved === "elevenlabs") {
+        return saved;
+      }
+    }
+    return "elevenlabs";
+  });
   const useElevenLabs = voiceProvider === "elevenlabs";
   const setUseElevenLabs = (val: boolean) => setVoiceProvider(val ? "elevenlabs" : "browser");
 
   const browserProvider = useMemo(() => new BrowserSpeechProvider(), []);
   const elevenLabsProvider = useMemo(() => new ElevenLabsFreeProvider(), []);
+
+  // Sync voice provider changes to localStorage
+  useEffect(() => {
+    localStorage.setItem("mockit_voice_provider", voiceProvider);
+  }, [voiceProvider]);
 
   // Lobby and Pre-flight state variables
   const [isLobby, setIsLobby] = useState(true);
@@ -183,6 +196,11 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   // Speech recognition setup
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    console.log("🎙️ [Speech Recognition] Browser Support Check:", SpeechRecognition ? "SUPPORTED" : "UNSUPPORTED");
+    if (typeof navigator !== "undefined") {
+      console.log("🎙️ [Speech Recognition] Browser Language:", navigator.language || "unknown");
+    }
+
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
@@ -190,6 +208,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
       recognition.lang = "en-US";
 
       recognition.onstart = () => {
+        console.log("🎙️ [Speech Recognition] onstart Event: Active listening started.");
         setIsListening(true);
         setRecognitionError(null);
       };
@@ -207,6 +226,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
         }
 
         if (finalTranscript) {
+          console.log(`🎙️ [Speech Recognition] onresult Event: Final Segment parsed: "${finalTranscript}"`);
           setUserInput(prev => {
             const separator = prev.trim() ? " " : "";
             return prev + separator + finalTranscript;
@@ -215,7 +235,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
       };
 
       recognition.onerror = (event: any) => {
-        console.error("Speech Recognition Error:", event.error);
+        console.error("🎙️ [Speech Recognition] onerror Event:", event.error);
         if (event.error === "not-allowed") {
           setRecognitionError("Microphone permission denied. Please allow mic access in your browser or type manually.");
         } else if (event.error === "no-speech") {
@@ -229,16 +249,19 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
       };
 
       recognition.onend = () => {
+        console.log("🎙️ [Speech Recognition] onend Event: Active listening ended.");
         setIsListening(false);
       };
 
       recognitionRef.current = recognition;
     } else {
+      console.warn("🎙️ [Speech Recognition] Browser does not support Web Speech API SpeechRecognition.");
       setRecognitionError("Your browser does not support Speech Recognition. Please type your responses manually below.");
     }
 
     return () => {
       if (recognitionRef.current) {
+        console.log("🎙️ [Speech Recognition] Aborting active recognition on teardown.");
         recognitionRef.current.abort();
       }
     };
@@ -303,14 +326,15 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
 
   // Request browser microphone permission
   const requestMicPermission = async () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    console.log("🎙️ [Microphone Permission] Requesting browser mic permission...");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log("🎙️ [Microphone Permission] SUCCESS: Microphone stream obtained successfully.");
       setMicStream(stream);
       setMicPermission("granted");
       setRecognitionError(null);
     } catch (err: any) {
-      console.error("Mic access error:", err);
+      console.error("🎙️ [Microphone Permission] ERROR: Failed to get microphone stream:", err.message || err);
       setMicPermission("denied");
       setRecognitionError("Microphone permission denied. To proceed with the voice interview, please allow microphone access or switch to manual typing.");
     }
@@ -323,8 +347,8 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
     setElevenLabsError(null);
     
     const sampleText = interviewerName === "Sophia" 
-      ? "Hello! I am Sophia, your technical interviewer today. I have configured your adaptive path, and my voice synthesis is working beautifully."
-      : "Hello! I am James, your executive assessor. Your system is fully verified, and I am ready to begin when you are.";
+      ? "Hi! I'm Lauren, and I'll be conducting your mock interview today."
+      : "Hello! I'm Evan, and I'll be your interviewer today.";
       
     try {
       await elevenLabsProvider.speak(sampleText, {
@@ -436,13 +460,18 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
     if (!isMountedRef.current) return;
     if (isMuted) return;
 
+    const activeInterviewer = overridePersonality || interviewerName;
+    console.log("🔊 [Voice Output] speakText starting...");
+    console.log(`- Text segment: "${text.substring(0, 80)}${text.length > 80 ? "..." : ""}"`);
+    console.log(`- Selected Provider: "${voiceProvider}"`);
+    console.log(`- Active Interviewer Persona: "${activeInterviewer}"`);
+    console.log(`- Speech Rate: ${overrideRate !== undefined ? overrideRate : speechRate}`);
+
     // Stop any current speaking in both providers
     browserProvider.cancel();
     elevenLabsProvider.cancel();
     setIsSpeaking(false);
     setElevenLabsError(null);
-
-    const activeInterviewer = overridePersonality || interviewerName;
 
     try {
       setIsSpeaking(true);
@@ -453,20 +482,23 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
         rate: overrideRate !== undefined ? overrideRate : speechRate,
         voiceName: overrideVoiceName || selectedVoiceName,
         onStart: () => {
+          console.log(`🔊 [Voice Output] STARTED audio playback using provider "${providerToUse.id}"`);
           setIsSpeaking(true);
         },
         onEnd: () => {
+          console.log(`🔊 [Voice Output] COMPLETED audio playback using provider "${providerToUse.id}"`);
           setIsSpeaking(false);
         },
         onError: async (err) => {
-          console.error("Speech synthesis error in active provider:", providerToUse.id, err);
+          console.error(`❌ [Voice Output] ERROR during playback with provider "${providerToUse.id}":`, err.message || err);
           setIsSpeaking(false);
 
           if (providerToUse.id === "elevenlabs") {
-            const friendlyMsg = "ElevenLabs is currently unavailable. Switched to Browser Voice.";
+            const friendlyMsg = `ElevenLabs is currently unavailable (Details: ${err.message || "Network Error"}). Switched to Browser Voice.`;
             setElevenLabsError(friendlyMsg);
             
             // Automatically fall back to Browser speech synthesis
+            console.warn("🔊 [Voice Output] Falling back to Default Browser Voice SpeechSynthesis...");
             setVoiceProvider("browser");
             
             try {
@@ -475,12 +507,21 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                 personality: activeInterviewer,
                 rate: overrideRate !== undefined ? overrideRate : speechRate,
                 voiceName: selectedVoiceName,
-                onStart: () => setIsSpeaking(true),
-                onEnd: () => setIsSpeaking(false),
-                onError: () => setIsSpeaking(false)
+                onStart: () => {
+                  console.log("🔊 [Voice Output] STARTED audio playback using fallback Browser voice.");
+                  setIsSpeaking(true);
+                },
+                onEnd: () => {
+                  console.log("🔊 [Voice Output] COMPLETED audio playback using fallback Browser voice.");
+                  setIsSpeaking(false);
+                },
+                onError: (fallbackErr) => {
+                  console.error("❌ [Voice Output] ERROR during fallback Browser voice playback:", fallbackErr);
+                  setIsSpeaking(false);
+                }
               });
             } catch (fallbackErr) {
-              console.error("Browser fallback speech synthesis also failed:", fallbackErr);
+              console.error("❌ [Voice Output] EXCEPTION during browser fallback execution:", fallbackErr);
               setIsSpeaking(false);
             }
           } else {
@@ -489,26 +530,30 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
         }
       });
     } catch (err: any) {
-      console.error("speakText failed completely:", err);
+      console.error("❌ [Voice Output] speakText caught high-level exception:", err);
       setIsSpeaking(false);
     }
   };
 
   // Toggle microphone listening
   const toggleListening = () => {
+    console.log("🎙️ [Speech Recognition] Toggle clicked. Current state (isListening):", isListening);
     if (!recognitionRef.current) {
+      console.warn("🎙️ [Speech Recognition] Cannot toggle listening: recognitionRef.current is not initialized.");
       setRecognitionError("Speech-to-text is not supported or was not initialized in this browser.");
       return;
     }
 
     if (isListening) {
+      console.log("🎙️ [Speech Recognition] Stopping active listening session...");
       recognitionRef.current.stop();
     } else {
       setRecognitionError(null);
       try {
+        console.log("🎙️ [Speech Recognition] Starting active listening session...");
         recognitionRef.current.start();
       } catch (err) {
-        console.error("Start recognition error:", err);
+        console.error("🎙️ [Speech Recognition] EXCEPTION during recognitionRef.start():", err);
       }
     }
   };
@@ -864,12 +909,12 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                         {testingVoiceSynth ? (
                           <>
                             <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
-                            Synthesizing free test...
+                            Previewing voice...
                           </>
                         ) : (
                           <>
                             <Play className="w-3.5 h-3.5 text-purple-400" />
-                            Test Assessor Output
+                            Preview Voice
                           </>
                         )}
                       </button>

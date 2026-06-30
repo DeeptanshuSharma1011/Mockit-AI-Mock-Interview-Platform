@@ -18,16 +18,28 @@ export default function App() {
   useEffect(() => {
     const storedToken = localStorage.getItem("mockit_token");
     const storedUser = localStorage.getItem("mockit_user");
+    const storedPage = localStorage.getItem("mockit_page") as Page | null;
+    const storedActiveId = localStorage.getItem("mockit_active_interview_id");
 
     if (storedToken && storedUser) {
       try {
         setToken(storedToken);
         setUser(JSON.parse(storedUser));
-        setPage("dashboard");
+        
+        if (storedPage === "interview" && storedActiveId) {
+          setActiveInterviewId(storedActiveId);
+          setPage("interview");
+        } else if (storedPage && ["dashboard", "setup"].includes(storedPage)) {
+          setPage(storedPage);
+        } else {
+          setPage("dashboard");
+        }
       } catch (err) {
         console.error("Failed to restore saved session", err);
         localStorage.removeItem("mockit_token");
         localStorage.removeItem("mockit_user");
+        localStorage.removeItem("mockit_page");
+        localStorage.removeItem("mockit_active_interview_id");
       }
     }
     setCheckingSession(false);
@@ -36,13 +48,17 @@ export default function App() {
   const handleAuthSuccess = (newToken: string, newUser: User) => {
     localStorage.setItem("mockit_token", newToken);
     localStorage.setItem("mockit_user", JSON.stringify(newUser));
+    localStorage.setItem("mockit_page", "dashboard");
     setToken(newToken);
     setUser(newUser);
+    setPage("dashboard");
   };
 
   const handleLogout = () => {
     localStorage.removeItem("mockit_token");
     localStorage.removeItem("mockit_user");
+    localStorage.removeItem("mockit_page");
+    localStorage.removeItem("mockit_active_interview_id");
     setToken(null);
     setUser(null);
     setPage("landing");
@@ -51,11 +67,17 @@ export default function App() {
 
   const handleNavigate = (targetPage: Page) => {
     setPage(targetPage);
+    localStorage.setItem("mockit_page", targetPage);
+    if (targetPage !== "interview") {
+      localStorage.removeItem("mockit_active_interview_id");
+    }
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const handleStartInterview = (interviewId: string) => {
     setActiveInterviewId(interviewId);
+    localStorage.setItem("mockit_active_interview_id", interviewId);
+    localStorage.setItem("mockit_page", "interview");
     setPage("interview");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
