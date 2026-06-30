@@ -3,13 +3,10 @@ import { Request, Response } from "express";
 // A pre-verified list of free-tier pre-made voices in ElevenLabs.
 // All of these are 100% available under the free tier without any paid plan.
 const APPROVED_FREE_VOICES: Record<string, string> = {
-  sophia: "21m00Tcm4TlvDq8ikWAM",  // Rachel (Female)
-  james: "ErXwobaYiN019vkySvjV",   // Antoni (Male)
-  rohan: "N2lVS1w4gNsC97gqnCUs",   // Liam (Male)
-  nicole: "piTKgcLEGmPEeK7g3949",  // Nicole (Female Fallback)
-  josh: "TxGEqn7nUu7vCg9vFr7b",    // Josh (Male Fallback)
-  bella: "EXAVITQu4vr4xnSDxMaL",   // Bella (Female Fallback)
-  arnold: "VR6A4Y667iaCHvInTka8"   // Arnold (Male Fallback)
+  lauren: "DODLEQrClDo8wCz460ld",  // Lauren (Female)
+  evan: "TWutjvRaJqAX89preB4e",    // Evan (Male)
+  sophia: "DODLEQrClDo8wCz460ld",  // Sophia mapped to Lauren (Female default)
+  james: "TWutjvRaJqAX89preB4e"    // James mapped to Evan (Male default)
 };
 
 const APPROVED_VOICE_IDS_SET = new Set(Object.values(APPROVED_FREE_VOICES));
@@ -29,17 +26,17 @@ export async function textToSpeech(req: Request, res: Response) {
     });
   }
 
-  // 1. Voice Selection Logic: Map personality to standard free-tier voices
-  let voiceId = APPROVED_FREE_VOICES.sophia; // Default to Sophia/Rachel
+  // 1. Voice Selection Logic: Map personality or requested voice to standard free-tier voices
+  let voiceId = APPROVED_FREE_VOICES.sophia; // Default to Lauren/Sophia
 
   if (requestedVoiceId && APPROVED_VOICE_IDS_SET.has(requestedVoiceId)) {
     voiceId = requestedVoiceId;
   } else if (personality) {
     const lowerP = personality.toLowerCase();
-    if (lowerP === "james") {
-      voiceId = APPROVED_FREE_VOICES.james; // Antoni
-    } else if (lowerP === "rohan") {
-      voiceId = APPROVED_FREE_VOICES.rohan; // Liam
+    if (lowerP === "james" || lowerP === "evan") {
+      voiceId = APPROVED_FREE_VOICES.evan;
+    } else if (lowerP === "sophia" || lowerP === "lauren") {
+      voiceId = APPROVED_FREE_VOICES.lauren;
     } else if (APPROVED_FREE_VOICES[lowerP]) {
       voiceId = APPROVED_FREE_VOICES[lowerP];
     }

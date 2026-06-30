@@ -93,7 +93,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   const isMountedRef = useRef(true);
   const evalTimeoutRef = useRef<any>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const [voiceProvider, setVoiceProvider] = useState<"browser" | "elevenlabs">("browser");
+  const [voiceProvider, setVoiceProvider] = useState<"browser" | "elevenlabs">("elevenlabs");
   const useElevenLabs = voiceProvider === "elevenlabs";
   const setUseElevenLabs = (val: boolean) => setVoiceProvider(val ? "elevenlabs" : "browser");
 
@@ -463,7 +463,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
           setIsSpeaking(false);
 
           if (providerToUse.id === "elevenlabs") {
-            const friendlyMsg = "The selected voice isn't available on the free plan. Switching to another free voice.";
+            const friendlyMsg = "ElevenLabs is currently unavailable. Switched to Browser Voice.";
             setElevenLabsError(friendlyMsg);
             
             // Automatically fall back to Browser speech synthesis
