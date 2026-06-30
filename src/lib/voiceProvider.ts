@@ -1,3 +1,21 @@
+export interface InterviewConfig {
+  interviewer: {
+    name: "Rachel" | "Evan";
+    gender: "female" | "male";
+    avatar: string;
+  };
+  voice: {
+    provider: "elevenlabs" | "browser" | "none";
+    voiceId: string;
+    displayName: string;
+  };
+  interview: {
+    category: "Technical" | "Non Technical";
+    domain: string;
+    difficulty: "Beginner" | "Intermediate" | "Advanced";
+  };
+}
+
 export interface InterviewerPersonality {
   id: string;
   name: string;
@@ -10,15 +28,16 @@ export interface InterviewerPersonality {
 }
 
 export const INTERVIEWER_PERSONALITIES: Record<string, InterviewerPersonality> = {
-  Sophia: {
-    id: "sophia",
-    name: "Sophia",
+  Rachel: {
+    id: "rachel",
+    name: "Rachel",
     title: "Staff Lead Engineer",
     description: "A thorough, empathetic lead engineer who focuses deeply on clean design, trade-offs, scalability, and code hygiene.",
     gender: "Female",
     defaultRate: 1.0,
     defaultPitch: 1.0,
     voiceKeywords: [
+      "rachel",
       "samantha",
       "zira",
       "female",
@@ -33,15 +52,16 @@ export const INTERVIEWER_PERSONALITIES: Record<string, InterviewerPersonality> =
       "google us english"
     ]
   },
-  James: {
-    id: "james",
-    name: "James",
+  Evan: {
+    id: "evan",
+    name: "Evan",
     title: "VP Executive Recruiter",
     description: "An executive recruiter with an objective, fast-paced evaluation style, prioritizing direct commercial outcomes and structured STAR story methods.",
     gender: "Male",
     defaultRate: 1.0,
     defaultPitch: 0.95,
     voiceKeywords: [
+      "evan",
       "daniel",
       "david",
       "male",
@@ -51,6 +71,40 @@ export const INTERVIEWER_PERSONALITIES: Record<string, InterviewerPersonality> =
       "en-in",
       "microsoft david",
       "google us english"
+    ]
+  },
+  Sophia: {
+    id: "rachel",
+    name: "Rachel",
+    title: "Staff Lead Engineer",
+    description: "A thorough, empathetic lead engineer who focuses deeply on clean design, trade-offs, scalability, and code hygiene.",
+    gender: "Female",
+    defaultRate: 1.0,
+    defaultPitch: 1.0,
+    voiceKeywords: [
+      "rachel",
+      "samantha",
+      "zira",
+      "female",
+      "susan",
+      "hazel",
+      "heather",
+      "karen"
+    ]
+  },
+  James: {
+    id: "evan",
+    name: "Evan",
+    title: "VP Executive Recruiter",
+    description: "An executive recruiter with an objective, fast-paced evaluation style, prioritizing direct commercial outcomes and structured STAR story methods.",
+    gender: "Male",
+    defaultRate: 1.0,
+    defaultPitch: 0.95,
+    voiceKeywords: [
+      "evan",
+      "daniel",
+      "david",
+      "male"
     ]
   },
   // Future extension personalities can be easily added here
@@ -89,7 +143,7 @@ export function getBestVoiceForPersonality(
 ): SpeechSynthesisVoice | null {
   if (!voices || voices.length === 0) return null;
 
-  const personality = INTERVIEWER_PERSONALITIES[personalityName] || INTERVIEWER_PERSONALITIES.Sophia;
+  const personality = INTERVIEWER_PERSONALITIES[personalityName] || INTERVIEWER_PERSONALITIES.Rachel || INTERVIEWER_PERSONALITIES.Sophia;
   const isFemale = personality.gender === "Female";
 
   // 1. Try matching high-priority custom keywords for the personality
@@ -173,7 +227,7 @@ export class BrowserSpeechProvider implements VoiceProvider {
       const utterance = new SpeechSynthesisUtterance(cleanText);
 
       // Apply options or personality-based configs
-      const personalityName = options?.personality || "Sophia";
+      const personalityName = options?.personality || "Rachel";
       const baseRate = options?.rate !== undefined ? options.rate : 1.0;
       const dynamicConfig = calculateDynamicVoiceConfig(cleanText, baseRate, personalityName);
       
@@ -242,10 +296,22 @@ export class ElevenLabsFreeProvider implements VoiceProvider {
       this.cancel();
 
       const cleanText = text.replace(/[*_`#\-]/g, " ").trim();
-      const personality = options?.personality || "Sophia";
+      const personality = options?.personality || "Rachel";
 
       try {
         if (options?.onStart) options.onStart();
+
+        // Save initial request diagnostics
+        if (typeof window !== "undefined") {
+          const d = (window as any).__mockit_diagnostics || {};
+          d.selectedProvider = "elevenlabs";
+          const isMale = personality === "James" || personality === "Evan";
+          d.voiceId = isMale ? "pNInz6obpgqjM7Y6WJQj" : "21m00Tcm4TlvDq8ikWAM";
+          d.selectedVoice = isMale ? "Evan (Male)" : "Rachel (Female)";
+          d.model = "eleven_multilingual_v2";
+          d.apiConnectionStatus = "Connecting...";
+          (window as any).__mockit_diagnostics = d;
+        }
 
         const response = await fetch("/api/tts", {
           method: "POST",
@@ -257,6 +323,19 @@ export class ElevenLabsFreeProvider implements VoiceProvider {
             personality: personality
           })
         });
+
+        // Save response diagnostics
+        if (typeof window !== "undefined") {
+          const d = (window as any).__mockit_diagnostics || {};
+          d.apiConnectionStatus = response.ok ? "Connected" : "Error";
+          d.lastApiResponse = `HTTP ${response.status} ${response.statusText}`;
+          if (!response.ok) {
+            d.lastError = `Status ${response.status}`;
+          } else {
+            d.lastError = "None";
+          }
+          (window as any).__mockit_diagnostics = d;
+        }
 
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));
@@ -291,6 +370,12 @@ export class ElevenLabsFreeProvider implements VoiceProvider {
 
         await audio.play();
       } catch (err: any) {
+        if (typeof window !== "undefined") {
+          const d = (window as any).__mockit_diagnostics || {};
+          d.apiConnectionStatus = "Failed";
+          d.lastError = err.message || "Network Error";
+          (window as any).__mockit_diagnostics = d;
+        }
         if (options?.onError) options.onError(err);
         reject(err);
       }
@@ -314,7 +399,7 @@ export function calculateDynamicVoiceConfig(
   baseRate: number,
   personalityName: string
 ): { rate: number; pitch: number } {
-  const personality = INTERVIEWER_PERSONALITIES[personalityName] || INTERVIEWER_PERSONALITIES.Sophia;
+  const personality = INTERVIEWER_PERSONALITIES[personalityName] || INTERVIEWER_PERSONALITIES.Rachel || INTERVIEWER_PERSONALITIES.Sophia;
   const lowerText = text.toLowerCase();
   
   let rate = baseRate * personality.defaultRate;

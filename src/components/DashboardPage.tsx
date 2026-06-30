@@ -417,7 +417,7 @@ export default function DashboardPage({ token, onNavigate, onLogout, onStartInte
                   </div>
 
                   <p className="text-[10px] text-gray-500 italic text-center leading-relaxed mt-2">
-                    These ratings adapt dynamically as Sophia and the AI evaluation engine track your progress.
+                    These ratings adapt dynamically as the AI evaluation engine tracks your progress.
                   </p>
                 </div>
               </div>

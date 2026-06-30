@@ -174,7 +174,7 @@ export default function InterviewSetupPage({ token, onNavigate, onStartInterview
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               
-              {/* Profile Female: Sophia */}
+              {/* Profile Female: Rachel */}
               <div 
                 id="profile-interviewer-female"
                 onClick={() => setGender("Female")}
@@ -190,7 +190,7 @@ export default function InterviewSetupPage({ token, onNavigate, onStartInterview
                 
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-0.5">
-                    <h4 className="font-bold text-white text-sm">Sophia</h4>
+                    <h4 className="font-bold text-white text-sm">Rachel</h4>
                     <span className="text-[10px] bg-purple-500/10 text-purple-400 px-1.5 py-0.5 rounded uppercase font-semibold">
                       Staff Lead
                     </span>
@@ -207,7 +207,7 @@ export default function InterviewSetupPage({ token, onNavigate, onStartInterview
                 )}
               </div>
 
-              {/* Profile Male: James */}
+              {/* Profile Male: Evan */}
               <div 
                 id="profile-interviewer-male"
                 onClick={() => setGender("Male")}
@@ -223,7 +223,7 @@ export default function InterviewSetupPage({ token, onNavigate, onStartInterview
 
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-0.5">
-                    <h4 className="font-bold text-white text-sm">James</h4>
+                    <h4 className="font-bold text-white text-sm">Evan</h4>
                     <span className="text-[10px] bg-indigo-500/10 text-indigo-400 px-1.5 py-0.5 rounded uppercase font-semibold">
                       VP Recruiter
                     </span>

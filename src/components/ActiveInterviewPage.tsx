@@ -25,7 +25,8 @@ import {
   PhoneOff,
   Settings,
   Sparkles,
-  ShieldAlert
+  ShieldAlert,
+  ExternalLink
 } from "lucide-react";
 import { Page } from "../types";
 import { 
@@ -55,7 +56,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   const [error, setError] = useState<string | null>(null);
   
   // Interview progress states
-  const [interviewerName, setInterviewerName] = useState("Sophia");
+  const [interviewerName, setInterviewerName] = useState("Rachel");
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [maxQuestions, setMaxQuestions] = useState(5);
   const [currentDifficulty, setCurrentDifficulty] = useState<"Beginner" | "Intermediate" | "Advanced">("Intermediate");
@@ -124,6 +125,128 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
   // Modern meeting layout state variables
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+
+  const [isInPreviewFrame, setIsInPreviewFrame] = useState(false);
+  const [dbApiKeyStatus, setDbApiKeyStatus] = useState<boolean | null>(null);
+
+  const isDev = (import.meta as any).env?.DEV || process.env.NODE_ENV !== "production";
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
+  const [diagnosticsData, setDiagnosticsData] = useState<any>({});
+
+  // Poll window diagnostics data for real-time reactivity
+  useEffect(() => {
+    if (!isDev) return;
+    const interval = setInterval(() => {
+      if (typeof window !== "undefined") {
+        setDiagnosticsData({ ...(window as any).__mockit_diagnostics });
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isDev]);
+
+  useEffect(() => {
+    try {
+      const inIframe = window.self !== window.top;
+      setIsInPreviewFrame(inIframe);
+      console.log("🖥️ [Frame Environment Check] Running inside iframe:", inIframe);
+    } catch (e) {
+      setIsInPreviewFrame(true);
+      console.log("🖥️ [Frame Environment Check] Running inside iframe (blocked access top): true");
+    }
+
+    // Securely query ElevenLabs key status from backend
+    fetch("/api/tts/status")
+      .then(res => res.json())
+      .then(data => {
+        setDbApiKeyStatus(data.apiKeyLoaded);
+        if (typeof window !== "undefined") {
+          const d = (window as any).__mockit_diagnostics || {};
+          d.apiKeyLoaded = data.apiKeyLoaded;
+          (window as any).__mockit_diagnostics = d;
+        }
+      })
+      .catch(err => console.error("Failed to load tts status:", err));
+  }, []);
+
+  // Load full interview session progress state on mount
+  useEffect(() => {
+    const cachedState = localStorage.getItem(`mockit_session_state_${interviewId}`);
+    if (cachedState) {
+      try {
+        const parsed = JSON.parse(cachedState);
+        console.log("🔄 [Session State Recovery] Found cached interview session progress:", parsed);
+        if (parsed.interviewerName) setInterviewerName(parsed.interviewerName);
+        if (parsed.currentQuestionIndex !== undefined) setCurrentQuestionIndex(parsed.currentQuestionIndex);
+        if (parsed.maxQuestions !== undefined) setMaxQuestions(parsed.maxQuestions);
+        if (parsed.currentDifficulty) setCurrentDifficulty(parsed.currentDifficulty);
+        if (parsed.currentQuestionText) setCurrentQuestionText(parsed.currentQuestionText);
+        if (parsed.isCompleted !== undefined) setIsCompleted(parsed.isCompleted);
+        if (parsed.overallScore !== undefined) setOverallScore(parsed.overallScore);
+        if (parsed.domain) setDomain(parsed.domain);
+        if (parsed.category) setCategory(parsed.category);
+        if (parsed.elapsedSeconds !== undefined) setElapsedSeconds(parsed.elapsedSeconds);
+        if (parsed.history) setHistory(parsed.history);
+        if (parsed.isMuted !== undefined) setIsMuted(parsed.isMuted);
+        if (parsed.speechRate !== undefined) setSpeechRate(parsed.speechRate);
+        if (parsed.selectedVoiceName) setSelectedVoiceName(parsed.selectedVoiceName);
+        if (parsed.userInput) setUserInput(parsed.userInput);
+        if (parsed.evalResult) setEvalResult(parsed.evalResult);
+        if (parsed.adaptiveStatusMsg) setAdaptiveStatusMsg(parsed.adaptiveStatusMsg);
+        if (parsed.isLobby !== undefined) setIsLobby(parsed.isLobby);
+      } catch (err) {
+        console.error("❌ Failed to parse cached interview session state:", err);
+      }
+    }
+  }, [interviewId]);
+
+  // Automatically save full interview session state on change
+  useEffect(() => {
+    if (loading) return; // Don't overwrite state with defaults during initial fetch
+
+    const stateToSave = {
+      interviewerName,
+      currentQuestionIndex,
+      maxQuestions,
+      currentDifficulty,
+      currentQuestionText,
+      isCompleted,
+      overallScore,
+      domain,
+      category,
+      elapsedSeconds,
+      history,
+      isMuted,
+      speechRate,
+      selectedVoiceName,
+      userInput,
+      evalResult,
+      adaptiveStatusMsg,
+      isLobby
+    };
+
+    localStorage.setItem(`mockit_session_state_${interviewId}`, JSON.stringify(stateToSave));
+  }, [
+    interviewId,
+    loading,
+    interviewerName,
+    currentQuestionIndex,
+    maxQuestions,
+    currentDifficulty,
+    currentQuestionText,
+    isCompleted,
+    overallScore,
+    domain,
+    category,
+    elapsedSeconds,
+    history,
+    isMuted,
+    speechRate,
+    selectedVoiceName,
+    userInput,
+    evalResult,
+    adaptiveStatusMsg,
+    isLobby
+  ]);
 
   // Load Speech Synthesis voices
   useEffect(() => {
@@ -284,13 +407,17 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
       }
       
       const int = data.interview;
-      setDomain(int.domain || "Technical Domain");
-      setCategory(int.category || "Professional");
-      setCurrentDifficulty(int.difficulty || "Intermediate");
       
-      // Determine default interviewer name based on gender setup
-      const defaultName = int.interviewerGender === "Female" ? "Sophia" : "James";
-      setInterviewerName(defaultName);
+      const cachedState = localStorage.getItem(`mockit_session_state_${interviewId}`);
+      if (!cachedState) {
+        setDomain(int.domain || "Technical Domain");
+        setCategory(int.category || "Professional");
+        setCurrentDifficulty(int.difficulty || "Intermediate");
+        
+        // Determine default interviewer name based on gender setup
+        const defaultName = int.interviewerGender === "Female" ? "Rachel" : "Evan";
+        setInterviewerName(defaultName);
+      }
       
     } catch (err: any) {
       console.error("Lobby load error:", err);
@@ -346,8 +473,9 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
     setTestingVoiceSynth(true);
     setElevenLabsError(null);
     
-    const sampleText = interviewerName === "Sophia" 
-      ? "Hi! I'm Lauren, and I'll be conducting your mock interview today."
+    const isFemale = interviewerName === "Sophia" || interviewerName === "Rachel";
+    const sampleText = isFemale 
+      ? "Hi! I'm Rachel, and I'll be conducting your mock interview today."
       : "Hello! I'm Evan, and I'll be your interviewer today.";
       
     try {
@@ -778,7 +906,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                       <div className="space-y-1">
                         <p className="text-sm font-bold text-white">Microphone Clearance Required</p>
                         <p className="text-xs text-gray-400 leading-relaxed">
-                          To converse with Sophia or James, Mockit requires microphone authorization. Please click the button below to grant permission.
+                          To converse with Rachel or Evan, Mockit requires microphone authorization. Please click the button below to grant permission.
                         </p>
                       </div>
                       <button
@@ -831,7 +959,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                     <div className="flex justify-between items-center bg-[#07080d] p-3 rounded-xl border border-white/5">
                       <span className="text-xs text-gray-400">Interviewer Assessor</span>
                       <span className="text-xs font-bold text-purple-400 flex items-center gap-1">
-                        {interviewerName === "Sophia" ? "Sophia (Female Lead)" : "James (Male VP)"}
+                        {interviewerName === "Rachel" || interviewerName === "Sophia" ? "Rachel (Female Lead)" : "Evan (Male VP)"}
                       </span>
                     </div>
                     <div className="flex justify-between items-center bg-[#07080d] p-3 rounded-xl border border-white/5">
@@ -1054,7 +1182,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                   <span className="text-gray-500">/</span>
                   <span className="text-purple-300 font-bold">{domain}</span>
                   <span className="text-gray-500">/</span>
-                  <span className="text-xs text-gray-400">Interviewer: {interviewerName === "Sophia" ? "Female" : "Male"}</span>
+                  <span className="text-xs text-gray-400">Interviewer: {interviewerName === "Rachel" || interviewerName === "Sophia" ? "Female" : "Male"}</span>
                   <span className="text-gray-500">/</span>
                   <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md ${
                     currentDifficulty === "Advanced" ? "bg-red-500/10 text-red-400 border border-red-500/15" :
@@ -1125,7 +1253,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                     <div className="space-y-1.5 max-w-md">
                       <h3 className="font-display font-extrabold text-white text-2xl">Interview Completed</h3>
                       <p className="text-xs text-gray-400 leading-relaxed">
-                        Your response metrics have been compiled and evaluated by Sophia and the adaptive platform. Your results are live.
+                        Your response metrics have been compiled and evaluated by {interviewerName} and the adaptive platform. Your results are live.
                       </p>
                     </div>
 
@@ -1163,6 +1291,30 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                     >
                       Fallback to Browser Voice
                     </button>
+                  </div>
+                )}
+
+                {/* Proactive Frame Alert Banner inside Active Interview Room */}
+                {isInPreviewFrame && !recognitionError && (
+                  <div className="absolute top-16 left-4 right-4 z-20 bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs p-3.5 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md">
+                    <div className="flex items-start gap-2.5">
+                      <ShieldAlert className="w-4.5 h-4.5 flex-shrink-0 text-amber-400 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <p className="font-bold text-white">Browser Preview Mode Restrictions</p>
+                        <p className="text-[11px] text-gray-300 leading-relaxed">
+                          Chrome blocks iframe microphone speech-to-text. For full hands-free voice control, please open this session in a new standalone browser tab.
+                        </p>
+                      </div>
+                    </div>
+                    <a 
+                      href={window.location.href} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold px-4 py-2 rounded-xl text-xs transition-all whitespace-nowrap text-center inline-flex items-center gap-1.5 cursor-pointer border border-amber-500/10"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      Open Interview in New Tab
+                    </a>
                   </div>
                 )}
 
@@ -1428,7 +1580,7 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
                   
                   {/* Adaptive path badge indicator */}
                   <div className="p-3 bg-purple-500/5 border border-purple-500/10 rounded-xl text-[10px] text-gray-400 leading-relaxed space-y-1">
-                    <p className="font-bold text-purple-300">Sophia's Adaptive Engine Pacing:</p>
+                    <p className="font-bold text-purple-300">AI Adaptive Engine Pacing:</p>
                     <p>Metrics adapt to individual accuracy. Strong answers elevate core category syntax questions.</p>
                   </div>
 
@@ -1485,6 +1637,111 @@ export default function ActiveInterviewPage({ token, interviewId, onNavigate }: 
 
           </main>
 
+        </div>
+      )}
+
+      {/* ==================== DEVELOPER DIAGNOSTICS PANEL ==================== */}
+      {isDev && (
+        <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end" id="dev-diagnostics-container">
+          <button
+            onClick={() => setIsDiagnosticsOpen(!isDiagnosticsOpen)}
+            className="px-4 py-2 bg-slate-900/90 hover:bg-slate-800 text-purple-400 hover:text-purple-300 rounded-xl text-xs font-mono font-black border border-purple-500/20 shadow-2xl transition-all flex items-center gap-2 cursor-pointer"
+          >
+            <Activity className="w-3.5 h-3.5 animate-pulse" />
+            {isDiagnosticsOpen ? "Hide Dev Diagnostics" : "Show Dev Diagnostics"}
+          </button>
+
+          {isDiagnosticsOpen && (
+            <div className="mt-2 w-80 sm:w-96 bg-slate-950/95 border border-white/10 rounded-2xl p-5 shadow-2xl text-xs font-mono text-gray-300 space-y-4 animate-[slideIn_0.2s_ease-out] backdrop-blur-md">
+              <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                <span className="font-extrabold text-white text-xs uppercase tracking-wider flex items-center gap-1.5">
+                  <Activity className="w-3.5 h-3.5 text-purple-400" />
+                  System Diagnostics
+                </span>
+                <span className="text-[9px] bg-purple-500/10 text-purple-400 border border-purple-500/20 px-1.5 py-0.5 rounded font-bold uppercase">
+                  Dev Mode
+                </span>
+              </div>
+
+              {/* ElevenLabs Diagnostics */}
+              <div className="space-y-2">
+                <p className="text-[10px] text-purple-400 font-extrabold uppercase tracking-wide">
+                  ElevenLabs Engine
+                </p>
+                <div className="grid grid-cols-2 gap-y-1 text-[11px] bg-white/5 p-2.5 rounded-xl border border-white/5 font-mono">
+                  <span className="text-gray-500">API Key Loaded:</span>
+                  <span className={`text-right font-bold ${dbApiKeyStatus ? "text-emerald-400" : "text-red-400"}`}>
+                    {dbApiKeyStatus === null ? "Checking..." : dbApiKeyStatus ? "Yes (✓)" : "No (✗)"}
+                  </span>
+
+                  <span className="text-gray-500">Provider:</span>
+                  <span className="text-right text-white font-bold">{voiceProvider}</span>
+
+                  <span className="text-gray-500">Active Voice:</span>
+                  <span className="text-right text-indigo-300 font-bold">
+                    {interviewerName === "Rachel" || interviewerName === "Sophia" ? "Rachel (Female)" : "Evan (Male)"}
+                  </span>
+
+                  <span className="text-gray-500">Voice ID:</span>
+                  <span className="text-right text-gray-400 text-[9px] truncate" title={interviewerName === "Rachel" || interviewerName === "Sophia" ? "21m00Tcm4TlvDq8ikWAM" : "pNInz6obpgqjM7Y6WJQj"}>
+                    {interviewerName === "Rachel" || interviewerName === "Sophia" ? "21m00Tcm4TlvDq8ikWAM" : "pNInz6obpgqjM7Y6WJQj"}
+                  </span>
+
+                  <span className="text-gray-500">Model:</span>
+                  <span className="text-right text-gray-400">{diagnosticsData.model || "eleven_multilingual_v2"}</span>
+
+                  <span className="text-gray-500">Connection Status:</span>
+                  <span className={`text-right font-bold ${diagnosticsData.apiConnectionStatus === "Connected" ? "text-emerald-400" : diagnosticsData.apiConnectionStatus === "Error" ? "text-red-400" : "text-gray-400"}`}>
+                    {diagnosticsData.apiConnectionStatus || "Idle"}
+                  </span>
+
+                  <span className="text-gray-500">Last HTTP Status:</span>
+                  <span className="text-right text-gray-400 truncate">{diagnosticsData.lastApiResponse || "None"}</span>
+
+                  <span className="text-gray-500">Last Error:</span>
+                  <span className="text-right text-red-400 truncate" title={diagnosticsData.lastError || "None"}>
+                    {diagnosticsData.lastError || "None"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Speech Recognition Diagnostics */}
+              <div className="space-y-2">
+                <p className="text-[10px] text-teal-400 font-extrabold uppercase tracking-wide">
+                  Speech Recognition
+                </p>
+                <div className="grid grid-cols-2 gap-y-1 text-[11px] bg-white/5 p-2.5 rounded-xl border border-white/5 font-mono">
+                  <span className="text-gray-500">Browser Supported:</span>
+                  <span className="text-right text-white">
+                    {!!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) ? "Yes (✓)" : "No (✗)"}
+                  </span>
+
+                  <span className="text-gray-500">Secure Context:</span>
+                  <span className="text-right text-white">
+                    {window.isSecureContext ? "Yes (✓)" : "No (✗)"}
+                  </span>
+
+                  <span className="text-gray-500">Inside Preview Frame:</span>
+                  <span className={`text-right font-bold ${isInPreviewFrame ? "text-amber-400 animate-pulse" : "text-emerald-400"}`}>
+                    {isInPreviewFrame ? "Yes (restricted)" : "No (direct)"}
+                  </span>
+
+                  <span className="text-gray-500">Mic Permission:</span>
+                  <span className="text-right text-white">{micPermission}</span>
+
+                  <span className="text-gray-500">Listener State:</span>
+                  <span className={`text-right font-bold ${isListening ? "text-teal-400 animate-pulse" : "text-gray-500"}`}>
+                    {isListening ? "Listening" : "Idle"}
+                  </span>
+
+                  <span className="text-gray-500">Last Rec Error:</span>
+                  <span className="text-right text-red-400 truncate" title={recognitionError || "None"}>
+                    {recognitionError || "None"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

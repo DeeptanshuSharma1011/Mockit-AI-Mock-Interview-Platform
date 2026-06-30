@@ -28,6 +28,15 @@ router.post("/interviews/:id/answer", authenticateToken as any, submitAnswer as 
 router.post("/interviews/:id/abort", authenticateToken as any, concludeInterviewEarly as any);
 
 // Text to Speech Proxy (ElevenLabs with browser fallback)
+router.get("/tts/status", (req, res) => {
+  res.json({
+    apiKeyLoaded: !!process.env.ELEVENLABS_API_KEY,
+    availableVoices: {
+      rachel: "21m00Tcm4TlvDq8ikWAM",
+      adam: "pNInz6obpgqjM7Y6WJQj"
+    }
+  });
+});
 router.post("/tts", textToSpeech);
 
 export default router;

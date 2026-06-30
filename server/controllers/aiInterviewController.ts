@@ -137,10 +137,10 @@ export async function startInterview(req: AuthenticatedRequest, res: Response) {
     }
 
     const { domain, category, difficulty, interviewerGender } = interview;
-    const interviewerName = interviewerGender === "Female" ? "Sophia" : "James";
+    const interviewerName = interviewerGender === "Female" ? "Rachel" : "Evan";
     const interviewerPersona = interviewerGender === "Female" 
-      ? "Sophia is a thorough, empathetic lead engineer who focuses deeply on clean design, trade-offs, scalability, and code hygiene."
-      : "James is a crisp, direct VP Recruiter who has an objective, fast-paced assessment style, emphasizing real-world commercial impact and the STAR method.";
+      ? "Rachel is a thorough, empathetic lead engineer who focuses deeply on clean design, trade-offs, scalability, and code hygiene."
+      : "Evan is a crisp, direct VP Recruiter who has an objective, fast-paced assessment style, emphasizing real-world commercial impact and the STAR method.";
 
     const { voiceProvider, voiceName } = req.body || {};
 
@@ -253,7 +253,7 @@ export async function submitAnswer(req: AuthenticatedRequest, res: Response) {
 
   try {
     const ai = getGeminiClient();
-    const interviewerName = session.interviewerGender === "Female" ? "Sophia" : "James";
+    const interviewerName = session.interviewerGender === "Female" ? "Rachel" : "Evan";
     const lastQuestion = session.history[session.history.length - 1]?.text || "";
 
     // Save candidate's response

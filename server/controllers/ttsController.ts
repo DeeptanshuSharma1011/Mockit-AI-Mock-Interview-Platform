@@ -3,10 +3,12 @@ import { Request, Response } from "express";
 // A pre-verified list of free-tier pre-made voices in ElevenLabs.
 // All of these are 100% available under the free tier without any paid plan.
 const APPROVED_FREE_VOICES: Record<string, string> = {
-  lauren: "DODLEQrClDo8wCz460ld",  // Lauren (Female)
-  evan: "TWutjvRaJqAX89preB4e",    // Evan (Male)
-  sophia: "DODLEQrClDo8wCz460ld",  // Sophia mapped to Lauren (Female default)
-  james: "TWutjvRaJqAX89preB4e"    // James mapped to Evan (Male default)
+  rachel: "21m00Tcm4TlvDq8ikWAM",  // Rachel (Female) - Free pre-made
+  adam: "pNInz6obpgqjM7Y6WJQj",    // Adam (Male) - Free pre-made
+  sophia: "21m00Tcm4TlvDq8ikWAM",  // Sophia mapped to Rachel (Female default)
+  james: "pNInz6obpgqjM7Y6WJQj",   // James mapped to Adam (Male default)
+  lauren: "21m00Tcm4TlvDq8ikWAM",  // Backwards compatibility
+  evan: "pNInz6obpgqjM7Y6WJQj"     // Backwards compatibility
 };
 
 const APPROVED_VOICE_IDS_SET = new Set(Object.values(APPROVED_FREE_VOICES));
@@ -26,35 +28,103 @@ export async function textToSpeech(req: Request, res: Response) {
 
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) {
-    console.warn("⚠️ ELEVENLABS_API_KEY is not defined in process.env.");
+    console.log("✗ ElevenLabs API Key Missing");
+    console.error("❌ DEVELOPER ERROR: ELEVENLABS_API_KEY is not defined in process.env. Please add ELEVENLABS_API_KEY=\"your_key_here\" to your /.env file and restart the development server.");
     return res.status(412).json({ 
-      error: "ElevenLabs API Key is not configured on the server. Falling back to default browser voice.", 
-      fallback: true 
+      error: "ElevenLabs API Key is not configured on the server. Please configure ELEVENLABS_API_KEY in your environment.", 
+      fallback: false
     });
   }
 
-  // Log key presence and mask it for security
+  console.log("✓ ElevenLabs API Key Loaded");
   const maskedKey = apiKey.length > 8 
     ? `${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}` 
     : "Invalid/Too Short";
-  console.log(`- API Key loaded: YES (Masked: ${maskedKey}, Length: ${apiKey.length})`);
+  console.log(`- API Key loaded (Masked: ${maskedKey}, Length: ${apiKey.length})`);
+
+  // Fetch available voices from ElevenLabs to ensure we only use voices that are fully accessible to this account/API key.
+  let availableVoices: any[] = [];
+  try {
+    const voicesRes = await fetch("https://api.elevenlabs.io/v1/voices", {
+      headers: { "xi-api-key": apiKey }
+    });
+    if (voicesRes.ok) {
+      const voicesData = await voicesRes.json();
+      availableVoices = voicesData.voices || [];
+      console.log(`- Dynamically fetched ${availableVoices.length} available voices from ElevenLabs.`);
+    } else {
+      console.warn(`- Failed to fetch voices list from ElevenLabs (Status: ${voicesRes.status}). Falling back to static mappings.`);
+    }
+  } catch (voicesErr: any) {
+    console.warn(`- Network error fetching available voices: ${voicesErr.message}. Falling back to static mappings.`);
+  }
 
   // 1. Voice Selection Logic: Map personality or requested voice to standard free-tier voices
-  // Female -> Lauren (DODLEQrClDo8wCz460ld)
-  // Male -> Evan (TWutjvRaJqAX89preB4e)
-  let voiceId = APPROVED_FREE_VOICES.sophia; // Default to Lauren/Sophia
+  // Default fallback values
+  let voiceId = APPROVED_FREE_VOICES.rachel; // Default to Rachel (21m00Tcm4TlvDq8ikWAM)
 
-  if (requestedVoiceId) {
-    voiceId = requestedVoiceId;
-  } else if (personality) {
-    const lowerP = personality.toLowerCase();
-    if (lowerP === "james" || lowerP === "evan") {
-      voiceId = APPROVED_FREE_VOICES.evan;
-    } else if (lowerP === "sophia" || lowerP === "lauren") {
-      voiceId = APPROVED_FREE_VOICES.lauren;
-    } else if (APPROVED_FREE_VOICES[lowerP]) {
-      voiceId = APPROVED_FREE_VOICES[lowerP];
+  const lowerP = (personality || "rachel").toLowerCase();
+  const isMale = lowerP === "james" || lowerP === "evan" || lowerP === "adam";
+
+  if (availableVoices.length > 0) {
+    // Check if the requested voice is already in the available list (e.g. to avoid using a library voice that isn't on the profile)
+    let matchedVoice = null;
+
+    // Filter by premade first to ensure we use free-tier compliant voices
+    const premadeVoices = availableVoices.filter(v => v.category === "premade");
+    const candidatePool = premadeVoices.length > 0 ? premadeVoices : availableVoices;
+
+    if (requestedVoiceId) {
+      matchedVoice = availableVoices.find(v => v.voice_id === requestedVoiceId);
     }
+
+    if (!matchedVoice) {
+      // Find a matched voice from the candidate pool based on requested personality or gender
+      if (isMale) {
+        // Find a male voice
+        matchedVoice = candidatePool.find(v => 
+          v.name.toLowerCase() === "adam" || 
+          v.name.toLowerCase() === "evan" ||
+          v.labels?.gender === "male" || 
+          v.labels?.gender?.toLowerCase() === "male" ||
+          v.description?.toLowerCase().includes("male")
+        ) || candidatePool.find(v => v.name.toLowerCase() === "dom" || v.name.toLowerCase() === "dave" || v.name.toLowerCase() === "callum");
+      } else {
+        // Find a female voice
+        matchedVoice = candidatePool.find(v => 
+          v.name.toLowerCase() === "rachel" || 
+          v.name.toLowerCase() === "sophia" ||
+          v.name.toLowerCase() === "lauren" ||
+          v.labels?.gender === "female" || 
+          v.labels?.gender?.toLowerCase() === "female" ||
+          v.description?.toLowerCase().includes("female")
+        ) || candidatePool.find(v => v.name.toLowerCase() === "bella" || v.name.toLowerCase() === "ellie" || v.name.toLowerCase() === "emily");
+      }
+    }
+
+    // Fallback to first voice in candidate pool if no gender match found
+    if (!matchedVoice && candidatePool.length > 0) {
+      matchedVoice = candidatePool[0];
+    }
+
+    if (matchedVoice) {
+      voiceId = matchedVoice.voice_id;
+      console.log(`- Dynamically resolved to available voice: "${matchedVoice.name}" (ID: ${voiceId}, Category: ${matchedVoice.category})`);
+    } else {
+      console.log(`- No available voices matched. Falling back to static voice ID: "${voiceId}"`);
+    }
+  } else {
+    // Traditional static resolution if API voices list could not be retrieved
+    if (requestedVoiceId) {
+      voiceId = requestedVoiceId;
+    } else if (personality) {
+      if (isMale) {
+        voiceId = APPROVED_FREE_VOICES.adam;
+      } else {
+        voiceId = APPROVED_FREE_VOICES.rachel;
+      }
+    }
+    console.log(`- Resolved to static voice ID: "${voiceId}"`);
   }
 
   console.log(`- Resolved Voice ID to use: "${voiceId}"`);
@@ -77,7 +147,12 @@ export async function textToSpeech(req: Request, res: Response) {
 
   for (const modelId of candidateModels) {
     try {
-      console.log(`- Attempting synthesis using model: "${modelId}"...`);
+      console.log(`🔊 [ElevenLabs Outgoing Request]`);
+      console.log(`  - URL: https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`);
+      console.log(`  - Voice ID: "${voiceId}"`);
+      console.log(`  - Model: "${modelId}"`);
+      console.log(`  - Text payload: "${cleanText}"`);
+
       const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`;
       
       const response = await fetch(url, {
@@ -97,15 +172,19 @@ export async function textToSpeech(req: Request, res: Response) {
       });
 
       if (response.ok) {
-        console.log(`✅ ElevenLabs synthesis succeeded with model "${modelId}"!`);
+        console.log(`✅ [ElevenLabs Response SUCCESS]`);
+        console.log(`  - Status: ${response.status} ${response.statusText}`);
         const arrayBuffer = await response.arrayBuffer();
         audioBuffer = Buffer.from(arrayBuffer);
+        console.log(`  - Audio received successfully: ${audioBuffer.length} bytes`);
         usedModel = modelId;
         success = true;
         break;
       } else {
         const errText = await response.text();
-        console.warn(`⚠️ Model "${modelId}" synthesis failed (HTTP ${response.status}). Details:`, errText);
+        console.error(`❌ [ElevenLabs Response FAILURE]`);
+        console.error(`  - Status: ${response.status} ${response.statusText}`);
+        console.error(`  - Error Body:`, errText);
         lastError = {
           status: response.status,
           statusText: response.statusText,
