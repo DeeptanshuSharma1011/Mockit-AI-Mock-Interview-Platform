@@ -284,30 +284,6 @@ These scripts are pre-configured in your `package.json` to manage development, c
 
 ---
 
-## 📸 Screenshots
-
-### 🔑 Authentication Gate
-<p align="center">
-  <img src="https://raw.githubusercontent.com/DeeptanshuSharma1011/Mockit-AI-Mock-Interview-Platform/main/assets/screenshots/auth.png" alt="Auth Page" width="85%" style="border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);"/>
-</p>
-
-### 📈 Interactive Analytics Dashboard
-<p align="center">
-  <img src="https://raw.githubusercontent.com/DeeptanshuSharma1011/Mockit-AI-Mock-Interview-Platform/main/assets/screenshots/dashboard.png" alt="Dashboard Page" width="85%" style="border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);"/>
-</p>
-
-### 💼 Interview Configuration Board
-<p align="center">
-  <img src="https://raw.githubusercontent.com/DeeptanshuSharma1011/Mockit-AI-Mock-Interview-Platform/main/assets/screenshots/setup.png" alt="Setup Page" width="85%" style="border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);"/>
-</p>
-
-### 🎙️ The Active Interview Room & Diagnostics
-<p align="center">
-  <img src="https://raw.githubusercontent.com/DeeptanshuSharma1011/Mockit-AI-Mock-Interview-Platform/main/assets/screenshots/interview.png" alt="Active Interview Room" width="85%" style="border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);"/>
-</p>
-
----
-
 ## 🔒 Security
 
 Mockit relies on strict web-security standards to guarantee session integrity and guard user privacy:
